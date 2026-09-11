@@ -7,7 +7,7 @@ import { useFetchClient } from '../useFetchClient';
 
 const Component = () => {
   const { get } = useFetchClient();
-  const [data, setData] = React.useState(null);
+  const [data, setData] = React.useState<unknown>(null);
   const [dataCalls, setDataCalls] = React.useState(0);
 
   React.useEffect(() => {
@@ -28,28 +28,26 @@ describe('useFetchClient', () => {
 
     const { data } = await result.current.get('/use-fetch-client-test');
 
-    expect(data).toMatchInlineSnapshot(`
-      {
-        "data": {
-          "pagination": {
-            "page": 1,
-            "pageCount": 10,
-          },
-          "results": [
-            {
-              "id": 2,
-              "name": "newest",
-              "publishedAt": null,
-            },
-            {
-              "id": 1,
-              "name": "oldest",
-              "publishedAt": null,
-            },
-          ],
+    expect(data).toEqual({
+      data: {
+        pagination: {
+          page: 1,
+          pageCount: 10,
         },
-      }
-    `);
+        results: [
+          {
+            id: 2,
+            name: 'newest',
+            publishedAt: null,
+          },
+          {
+            id: 1,
+            name: 'oldest',
+            publishedAt: null,
+          },
+        ],
+      },
+    });
   });
 
   it('should call the GET method once even when we rerender the Component', async () => {

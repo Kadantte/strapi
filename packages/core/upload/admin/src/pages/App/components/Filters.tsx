@@ -1,12 +1,17 @@
 import * as React from 'react';
 
-import { useTracking, useQueryParams } from '@strapi/admin/strapi-admin';
+import {
+  deepEncodeQueryValues,
+  useQueryParams,
+  withEncodedUserParams,
+} from '@strapi/admin/strapi-admin';
 import { Button, Popover } from '@strapi/design-system';
 import { Filter } from '@strapi/icons';
 import { useIntl } from 'react-intl';
 
 import { FilterList } from '../../../components/FilterList/FilterList';
 import { FilterPopover } from '../../../components/FilterPopover/FilterPopover';
+import { useTracking } from '../../../hooks/useTracking';
 import { displayedFilters } from '../../../utils';
 
 import type { Query } from '../../../../../shared/contracts/files';
@@ -21,7 +26,12 @@ export const Filters = () => {
   const filters = query?.filters?.$and || [];
 
   const handleRemoveFilter: FilterListProps['onRemoveFilter'] = (nextFilters) => {
-    setQuery({ filters: { $and: nextFilters }, page: 1 } as Query);
+    setQuery(
+      withEncodedUserParams(query, {
+        filters: deepEncodeQueryValues({ $and: nextFilters }),
+        page: 1,
+      }) as Query
+    );
   };
 
   const handleSubmit: FilterPopoverProps['onSubmit'] = (filters) => {
@@ -29,7 +39,12 @@ export const Filters = () => {
       location: 'content-manager',
       filter: Object.keys(filters[filters.length - 1])[0],
     });
-    setQuery({ filters: { $and: filters }, page: 1 } as Query);
+    setQuery(
+      withEncodedUserParams(query, {
+        filters: deepEncodeQueryValues({ $and: filters }),
+        page: 1,
+      }) as Query
+    );
   };
 
   return (
@@ -42,8 +57,8 @@ export const Filters = () => {
       <FilterPopover
         displayedFilters={displayedFilters}
         filters={filters}
-        onToggle={setOpen as () => void}
         onSubmit={handleSubmit}
+        onToggle={setOpen as FilterPopoverProps['onToggle']}
       />
       <FilterList
         appliedFilters={filters as FilterListProps['appliedFilters']}

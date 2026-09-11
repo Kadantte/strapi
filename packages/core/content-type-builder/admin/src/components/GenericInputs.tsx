@@ -44,10 +44,44 @@ interface InputOption {
   value: string;
 }
 
-interface CustomInputProps<TAttribute extends Schema.Attribute.AnyAttribute>
-  extends Omit<GenericInputProps<TAttribute>, 'customInputs'> {
-  ref?: React.Ref<HTMLElement>;
+type ConditionField = {
+  name: string;
+  type: string;
+  enum?: string[];
+};
+
+interface CustomInputProps<
+  TAttribute extends Schema.Attribute.AnyAttribute = Schema.Attribute.AnyAttribute,
+> {
+  attribute?: TAttribute;
+  autoComplete?: string;
+  description?: TranslationMessage;
+  disabled?: boolean;
+  error?: string;
   hint?: string | React.JSX.Element | (string | React.JSX.Element)[];
+  intlLabel: TranslationMessage;
+  labelAction?: React.ReactNode;
+  name: string;
+  onChange: (
+    payload: {
+      target: {
+        name: string;
+        value?: unknown;
+        type?: string;
+      };
+    },
+    shouldSetInitialValue?: boolean
+  ) => void;
+  onDelete?: () => void;
+  options?: InputOption[];
+  placeholder?: TranslationMessage;
+  required?: boolean;
+  step?: number;
+  type: string;
+  value?: unknown;
+  autoFocus?: boolean;
+  attributeName?: string;
+  conditionFields?: ConditionField[];
 }
 
 interface GenericInputProps<
@@ -66,20 +100,24 @@ interface GenericInputProps<
     payload: {
       target: {
         name: string;
-        value: Schema.Attribute.Value<TAttribute>;
+        value?: unknown;
         type?: string;
       };
     },
     shouldSetInitialValue?: boolean
   ) => void;
+  onDelete?: () => void;
   options?: InputOption[];
   placeholder?: TranslationMessage;
   required?: boolean;
   step?: number;
   type: string;
   // TODO: The value depends on the input type, too complicated to handle all cases here
-  value?: Schema.Attribute.Value<TAttribute>;
+  value?: unknown;
   isNullable?: boolean;
+  autoFocus?: boolean;
+  attributeName?: string;
+  conditionFields?: ConditionField[];
 }
 
 const GenericInput = ({
@@ -92,14 +130,18 @@ const GenericInput = ({
   error,
   name,
   onChange,
+  onDelete,
   options = [],
   placeholder,
   required,
   step,
   type,
   value: defaultValue,
-  isNullable,
+  isNullable: _isNullable,
+  autoFocus,
   attribute,
+  attributeName,
+  conditionFields,
   ...rest
 }: GenericInputProps) => {
   const { formatMessage } = useIntl();
@@ -141,11 +183,37 @@ const GenericInput = ({
 
   const [showPassword, setShowPassword] = React.useState(false);
 
-  const CustomInput = customInputs ? customInputs[type] : null;
+  const CustomInput = customInputs
+    ? (customInputs[type] as React.ComponentType<CustomInputProps> | undefined)
+    : null;
 
   // the API always returns null, which throws an error in React,
   // therefore we cast this case to undefined
   const value = defaultValue ?? undefined;
+  const stringValue =
+    typeof value === 'string' || typeof value === 'number' ? value.toString() : '';
+  const numberValue = (() => {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : undefined;
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsedValue = Number(value);
+
+      return Number.isFinite(parsedValue) ? parsedValue : undefined;
+    }
+
+    return undefined;
+  })();
+  const selectValue =
+    typeof value === 'string' || typeof value === 'number' || value === null ? value : undefined;
+  const jsonValue =
+    value !== undefined &&
+    (typeof value === 'object' || typeof value === 'boolean' || typeof value === 'number')
+      ? JSON.stringify(value, null, 2)
+      : typeof value === 'string'
+        ? value
+        : undefined;
 
   /*
    TODO: ideally we should pass in `defaultValue` and `value` for
@@ -154,8 +222,6 @@ const GenericInput = ({
 
    See: https://github.com/strapi/strapi/pull/12861
   */
-  const valueWithEmptyStringFallback = value ?? '';
-
   function getErrorMessage(error: string | TranslationMessage | undefined) {
     if (!error) {
       return null;
@@ -193,11 +259,15 @@ const GenericInput = ({
         error={errorMessage || ''}
         name={name}
         onChange={onChange}
+        onDelete={onDelete}
         options={options}
         required={required}
         placeholder={placeholder}
         type={type}
         value={value}
+        autoFocus={autoFocus}
+        attributeName={attributeName}
+        conditionFields={conditionFields}
       />
     );
   }
@@ -221,7 +291,7 @@ const GenericInput = ({
       case 'json': {
         return (
           <JSONInput
-            value={value}
+            value={jsonValue}
             disabled={disabled}
             onChange={(json) => {
               // Default to null when the field is not required and there is no input value
@@ -239,7 +309,7 @@ const GenericInput = ({
       case 'bool': {
         return (
           <Toggle
-            checked={defaultValue === null ? null : defaultValue || false}
+            checked={defaultValue === null ? null : Boolean(defaultValue)}
             disabled={disabled}
             offLabel={formatMessage({
               id: 'app.components.ToggleCheckbox.off-label',
@@ -316,7 +386,8 @@ const GenericInput = ({
             }}
             placeholder={formattedPlaceholder}
             step={step}
-            value={value}
+            value={numberValue}
+            autoFocus={autoFocus}
           />
         );
       }
@@ -330,7 +401,8 @@ const GenericInput = ({
             }}
             placeholder={formattedPlaceholder}
             type="email"
-            value={valueWithEmptyStringFallback}
+            value={stringValue}
+            autoFocus={autoFocus}
           />
         );
       }
@@ -346,7 +418,8 @@ const GenericInput = ({
             }}
             placeholder={formattedPlaceholder}
             type="text"
-            value={valueWithEmptyStringFallback}
+            value={stringValue}
+            autoFocus={autoFocus}
           />
         );
       }
@@ -379,7 +452,7 @@ const GenericInput = ({
             }}
             placeholder={formattedPlaceholder}
             type={showPassword ? 'text' : 'password'}
-            value={valueWithEmptyStringFallback}
+            value={stringValue}
           />
         );
       }
@@ -391,7 +464,7 @@ const GenericInput = ({
               onChange({ target: { name, value, type: 'select' } });
             }}
             placeholder={formattedPlaceholder}
-            value={value}
+            value={selectValue}
           >
             {options.map(({ metadatas: { intlLabel, disabled, hidden }, key, value }) => {
               return (
@@ -409,12 +482,12 @@ const GenericInput = ({
             disabled={disabled}
             onChange={(event) => onChange({ target: { name, value: event.target.value, type } })}
             placeholder={formattedPlaceholder}
-            value={valueWithEmptyStringFallback}
+            value={stringValue}
           />
         );
       }
       case 'time': {
-        const formattedValue = handleTimeChange({ value, onChange, name, type });
+        const formattedValue = handleTimeChange({ value: stringValue, onChange, name, type });
 
         return (
           <TimePicker
@@ -524,7 +597,7 @@ const getFieldUnits = ({
   minimum?: number;
   maximum?: number;
 }) => {
-  if (type && ['biginteger', 'integer', 'number'].includes(type)) {
+  if (type && !['string', 'uid', 'richtext', 'email', 'password', 'text'].includes(type)) {
     return {};
   }
   const maxValue = Math.max(minimum || 0, maximum || 0);

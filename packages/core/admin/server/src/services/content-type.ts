@@ -1,5 +1,5 @@
 import _ from 'lodash';
-import { uniq, startsWith, intersection } from 'lodash/fp';
+import { uniq, startsWith } from 'lodash/fp';
 import { contentTypes as contentTypesUtils } from '@strapi/utils';
 import type { Modules, Struct } from '@strapi/types';
 import { getService } from '../utils';
@@ -150,10 +150,10 @@ const getPermissionsWithNestedFields = (
  * Cleans permissions' fields (add required ones, remove the non-existing ones)
  */
 const cleanPermissionFields = (
-  permissions: Modules.Permissions.PermissionRule[],
-  { nestingLevel }: FieldOptions = {}
+  permissions: Modules.Permissions.PermissionRule[]
 ): Modules.Permissions.PermissionRule[] => {
   const { actionProvider } = getService('permission');
+  const nestedFieldsCache = new Map<string, string[]>();
 
   return permissions.map((permission: any) => {
     const {
@@ -173,24 +173,33 @@ const cleanPermissionFields = (
       return permission;
     }
 
-    const possibleFields = getNestedFieldsWithIntermediate(strapi.contentTypes[subject], {
-      components: strapi.components,
-      nestingLevel,
-    });
+    let possibleFields = nestedFieldsCache.get(subject);
+    if (!possibleFields) {
+      possibleFields = getNestedFieldsWithIntermediate(strapi.contentTypes[subject], {
+        components: strapi.components,
+      });
+      nestedFieldsCache.set(subject, possibleFields);
+    }
 
-    const requiredFields = getNestedFields(strapi.contentTypes[subject], {
-      components: strapi.components,
-      requiredOnly: true,
-      nestingLevel,
-      existingFields: fields,
-    });
+    const currentFields: string[] = fields || [];
 
-    // @ts-expect-error lodash types
-    const badNestedFields = uniq([...intersection(fields, possibleFields), ...requiredFields]);
-
-    const newFields = badNestedFields.filter(
-      (field) => !badNestedFields.some(startsWith(`${field}.`))
+    const validUserFields: string[] = uniq(
+      possibleFields.filter((pf) =>
+        currentFields.some((cf) => pf === cf || startsWith(`${cf}.`, pf))
+      )
     );
+
+    // A field is considered "not nested" if no other valid user field starts with this field's path followed by a dot.
+    // This helps to remove redundant parent paths when a more specific child path is already included.
+    // For example, if 'component.title' is present, 'component' would be filtered out by this condition.
+    const isNotNestedField = (field: string) =>
+      !validUserFields.some(
+        (validUserField: string) =>
+          validUserField !== field && startsWith(`${field}.`, validUserField)
+      );
+
+    // Filter out fields that are parent paths of other included fields.
+    const newFields = validUserFields.filter(isNotNestedField);
 
     return permissionDomain.setProperty('fields', newFields, permission);
   }, []);

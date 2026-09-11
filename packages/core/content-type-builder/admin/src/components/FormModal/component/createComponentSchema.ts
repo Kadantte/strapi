@@ -3,8 +3,9 @@ import { snakeCase } from 'lodash/fp';
 import * as yup from 'yup';
 
 import { getTrad } from '../../../utils/getTrad';
-import { CATEGORY_NAME_REGEX } from '../category/regex';
 import { createComponentUid } from '../utils/createUid';
+
+const CATEGORY_NAME_REGEX = /^[A-Za-z][-_0-9A-Za-z]*$/;
 
 export const createComponentSchema = (
   usedComponentNames: Array<string>,
@@ -56,7 +57,7 @@ export const createComponentSchema = (
       .required(errorsTrads.required.id),
     category: yup
       .string()
-      .matches(CATEGORY_NAME_REGEX, errorsTrads.regex.id)
+      .matches(CATEGORY_NAME_REGEX, getTrad('error.category.format'))
       .required(errorsTrads.required.id),
 
     icon: yup.string(),

@@ -9,14 +9,14 @@ export const CONFIG_FILENAME = 'config.json';
 
 export type LocalConfig = {
   token?: string;
-  deviceId?: string;
+  installId?: string;
 };
 
 async function checkDirectoryExists(directoryPath: string) {
   try {
     const fsStat = await fse.lstat(directoryPath);
     return fsStat.isDirectory();
-  } catch (e) {
+  } catch {
     return false;
   }
 }
@@ -45,7 +45,7 @@ export async function getLocalConfig(): Promise<LocalConfig> {
   await fse.ensureFile(configFilePath);
   try {
     return await fse.readJSON(configFilePath, { encoding: 'utf8', throws: true });
-  } catch (e) {
+  } catch {
     return {};
   }
 }

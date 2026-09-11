@@ -5,6 +5,8 @@ import pluginPkg from '../../package.json';
 import { MediaLibraryDialog } from './components/MediaLibraryDialog/MediaLibraryDialog';
 import { MediaLibraryInput } from './components/MediaLibraryInput/MediaLibraryInput';
 import { PERMISSIONS } from './constants';
+import { UploadProgressDialog } from './future/components/UploadProgressDialog';
+import { uploadProgressReducer } from './future/store/uploadProgress';
 import { pluginId } from './pluginId';
 import { getTrad, prefixPluginTranslations } from './utils';
 
@@ -17,6 +19,14 @@ const name = pluginPkg.strapi.name;
 
 const admin: Plugin.Config.AdminInput = {
   register(app: StrapiApp) {
+    /**
+     * Whichever Media Library is selected owns `plugins/upload` outright: the other is
+     * not registered at all, so there is exactly one Media Library entry in the menu.
+     *
+     * The new one is the default; `useLegacyMediaLibrary` opts back out.
+     */
+    const isLegacyMediaLibrary = window.strapi.featureFlags.isEnabled('useLegacyMediaLibrary');
+
     app.addMenuLink({
       to: `plugins/${pluginId}`,
       icon: Images,
@@ -25,9 +35,28 @@ const admin: Plugin.Config.AdminInput = {
         defaultMessage: 'Media Library',
       },
       permissions: PERMISSIONS.main,
-      Component: () => import('./pages/App/App').then((mod) => ({ default: mod.Upload })),
+      Component: isLegacyMediaLibrary
+        ? () => {
+            return import('./pages/App/App').then((mod) => ({ default: mod.Upload }));
+          }
+        : () => {
+            return import('./future/App').then((mod) => ({
+              default: mod.BetaMediaLibrary,
+            }));
+          },
       position: 4,
     });
+
+    if (!isLegacyMediaLibrary) {
+      app.addReducers({ uploadProgress: uploadProgressReducer });
+
+      app.addComponents([
+        {
+          name: 'future-global::upload-progress',
+          Component: UploadProgressDialog,
+        },
+      ]);
+    }
 
     app.addSettingsLink('global', {
       id: 'media-library-settings',
@@ -36,9 +65,10 @@ const admin: Plugin.Config.AdminInput = {
         id: getTrad('plugin.name'),
         defaultMessage: 'Media Library',
       },
-      async Component() {
-        const { ProtectedSettingsPage } = await import('./pages/SettingsPage/SettingsPage');
-        return { default: ProtectedSettingsPage };
+      Component() {
+        return import('./pages/SettingsPage/SettingsPage').then((mod) => ({
+          default: mod.ProtectedSettingsPage,
+        }));
       },
       permissions: PERMISSIONS.settings,
     });

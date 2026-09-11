@@ -2,6 +2,7 @@ import type { Core } from '@strapi/types';
 
 import { getService } from './utils';
 import { ALLOWED_SORT_STRINGS, ALLOWED_WEBHOOK_EVENTS } from './constants';
+import { notifyMediaLibraryDefault } from './media-library-default-notice';
 
 export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
   const defaultConfig = {
@@ -9,6 +10,7 @@ export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
       sizeOptimization: true,
       responsiveDimensions: true,
       autoOrientation: false,
+      aiMetadata: true,
     },
     view_configuration: {
       pageSize: 10,
@@ -16,11 +18,19 @@ export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
     },
   };
 
+  // Whether this plugin has stored settings from an earlier boot, which is what separates
+  // an upgrading app from a fresh install for the Media Library default notice below.
+  let isExistingApp = false;
+
   for (const [key, defaultValue] of Object.entries(defaultConfig)) {
     // set plugin store
     const configurator = strapi.store!({ type: 'plugin', name: 'upload', key });
 
     const config = await configurator.get({});
+
+    if (config) {
+      isExistingApp = true;
+    }
     if (
       config &&
       Object.keys(defaultValue).every((key) => Object.prototype.hasOwnProperty.call(config, key))
@@ -36,10 +46,13 @@ export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
     });
   }
 
+  await notifyMediaLibraryDefault({ strapi, isExistingApp });
+
   await registerPermissionActions();
   await registerWebhookEvents();
 
   await getService('weeklyMetrics').registerCron();
+
   getService('metrics').sendUploadPluginMetrics();
 
   getService('extensions').signFileUrlsOnDocumentService();

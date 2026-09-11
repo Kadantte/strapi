@@ -1,4 +1,5 @@
 import { PassThrough, Transform, Readable, Writable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { extname } from 'path';
 import { EOL } from 'os';
 import type Chain from 'stream-chain';
@@ -31,7 +32,8 @@ import type {
   ErrorHandlerContext,
   ErrorHandlers,
   ErrorCode,
-} from '../../types';
+  StageProgress,
+} from '../types';
 import type { Diff } from '../utils/json';
 
 import { compareSchemas, validateProvider } from './validation';
@@ -119,6 +121,12 @@ class TransferEngine<
     errors: {},
   };
 
+  #currentStreamController?: AbortController;
+
+  #aborted: boolean = false;
+
+  #closed: boolean = false;
+
   onSchemaDiff(handler: SchemaDiffHandler) {
     this.#handlers?.schemaDiff?.push(handler);
   }
@@ -142,9 +150,6 @@ class TransferEngine<
 
     return !!context.ignore;
   }
-
-  // Save the currently open stream so that we can access it at any time
-  #currentStream?: Writable;
 
   constructor(sourceProvider: S, destinationProvider: D, options: ITransferEngineOptions) {
     this.diagnostics = createDiagnosticReporter();
@@ -305,8 +310,7 @@ class TransferEngine<
   }
 
   /**
-   * Create and return a PassThrough stream.
-   *
+   * Create and return a PassThrough stream for per-object progress tracking.
    * Upon writing data into it, it'll update the Engine's transfer progress data and trigger stage update events.
    */
   #progressTracker(
@@ -325,6 +329,90 @@ class TransferEngine<
       },
     });
   }
+
+  /**
+   * Create and return a PassThrough stream for per-chunk progress tracking (used for assets).
+   * Pipes each asset's binary stream through a Transform that counts bytes and forwards chunks,
+   * then replaces asset.stream with that transform so the destination has a single consumer.
+   * This avoids consuming the stream (which would leave the destination with an empty stream)
+   * and ensures backpressure is applied so memory is not held for the entire transfer.
+   */
+  #progressTrackerChunks(
+    stage: TransferStage,
+    aggregate?: {
+      key?(value: unknown): string;
+    }
+  ) {
+    const updateAggregateBytes = this.#updateAggregateBytes.bind(this);
+    const incrementAggregateCount = this.#incrementAggregateCount.bind(this);
+    const emitStageUpdate = this.#emitStageUpdate.bind(this);
+
+    return new PassThrough({
+      objectMode: true,
+      transform: (asset, _encoding, callback) => {
+        if (!asset?.stream || typeof asset.stream.pipe !== 'function') {
+          return callback(null, asset);
+        }
+
+        const key = aggregate?.key?.(asset);
+        if (!this.progress.data[stage]) {
+          this.progress.data[stage] = { count: 0, bytes: 0, startTime: Date.now() };
+        }
+        const stageProgress = this.progress.data[stage];
+
+        if (!stageProgress) {
+          throw new TransferEngineError('fatal', 'Stage progress data not found');
+        }
+
+        const progressTransform = new Transform({
+          objectMode: true,
+          transform(chunk: Buffer | unknown, _enc, cb) {
+            // Asset file reads should yield Buffers; avoid skewing totals if not.
+            const byteLength = Buffer.isBuffer(chunk) ? chunk.length : 1;
+            stageProgress.bytes += byteLength;
+            if (key) {
+              updateAggregateBytes(stageProgress, key, byteLength);
+            }
+            emitStageUpdate('progress', stage);
+            cb(null, chunk);
+          },
+          flush(cb) {
+            stageProgress.count += 1;
+            if (key) {
+              incrementAggregateCount(stageProgress, key);
+            }
+            emitStageUpdate('progress', stage);
+            cb(null);
+          },
+        });
+
+        asset.stream.on('error', (err: Error) => progressTransform.destroy(err));
+        asset.stream.pipe(progressTransform);
+        asset.stream = progressTransform;
+        callback(null, asset);
+      },
+    });
+  }
+
+  #updateAggregateBytes = (stageProgress: StageProgress, key: string, bytes: number) => {
+    if (!stageProgress.aggregates) {
+      stageProgress.aggregates = {};
+    }
+    if (!stageProgress.aggregates[key]) {
+      stageProgress.aggregates[key] = { count: 0, bytes: 0 };
+    }
+    stageProgress.aggregates[key].bytes += bytes;
+  };
+
+  #incrementAggregateCount = (stageProgress: StageProgress, key: string) => {
+    if (!stageProgress.aggregates) {
+      stageProgress.aggregates = {};
+    }
+    if (!stageProgress.aggregates[key]) {
+      stageProgress.aggregates[key] = { count: 0, bytes: 0 };
+    }
+    stageProgress.aggregates[key].count += 1;
+  };
 
   /**
    * Shorthand method used to trigger transfer update events to every listeners
@@ -508,6 +596,10 @@ class TransferEngine<
     transform?: PassThrough | Chain;
     tracker?: PassThrough;
   }) {
+    if (this.#aborted) {
+      throw new TransferEngineError('fatal', 'Transfer aborted.');
+    }
+
     const { stage, source, destination, transform, tracker } = options;
 
     const updateEndTime = () => {
@@ -547,43 +639,53 @@ class TransferEngine<
 
     this.#emitStageUpdate('start', stage);
 
-    await new Promise<void>((resolve, reject) => {
-      let stream: Readable = source;
+    try {
+      const streams: (Readable | Writable)[] = [source];
 
       if (transform) {
-        stream = stream.pipe(transform);
+        streams.push(transform);
       }
-
       if (tracker) {
-        stream = stream.pipe(tracker);
+        streams.push(tracker);
       }
 
-      this.#currentStream = stream
-        .pipe(destination)
-        .on('error', (e) => {
-          updateEndTime();
-          this.#emitStageUpdate('error', stage);
-          this.reportError(e, 'error');
-          destination.destroy(e);
-          reject(e);
-        })
-        .on('close', () => {
-          this.#currentStream = undefined;
-          updateEndTime();
-          resolve();
-        });
-    });
+      streams.push(destination);
 
-    this.#emitStageUpdate('finish', stage);
+      // NOTE: to debug/confirm backpressure issues from misbehaving stream, uncomment the following lines
+      // source.on('pause', () => console.log(`[${stage}] Source paused due to backpressure`));
+      // source.on('resume', () => console.log(`[${stage}] Source resumed`));
+      // destination.on('drain', () =>
+      //   console.log(`[${stage}] Destination drained, resuming data flow`)
+      // );
+      // destination.on('error', (err) => console.error(`[${stage}] Destination error:`, err));
+
+      const controller = new AbortController();
+      const { signal } = controller;
+
+      // Store the controller so you can cancel later
+      this.#currentStreamController = controller;
+
+      await pipeline(streams, { signal });
+
+      this.#emitStageUpdate('finish', stage);
+    } catch (e) {
+      updateEndTime();
+      this.#emitStageUpdate('error', stage);
+      this.reportError(e as Error, 'error');
+      if (!destination.destroyed) {
+        destination.destroy(e as Error);
+      }
+      throw e;
+    } finally {
+      updateEndTime();
+    }
   }
 
   // Cause an ongoing transfer to abort gracefully
   async abortTransfer(): Promise<void> {
-    const err = new TransferEngineError('fatal', 'Transfer aborted.');
-    if (!this.#currentStream) {
-      throw err;
-    }
-    this.#currentStream.destroy(err);
+    this.#aborted = true;
+    this.#currentStreamController?.abort();
+    throw new TransferEngineError('fatal', 'Transfer aborted.');
   }
 
   async init(): Promise<void> {
@@ -619,6 +721,8 @@ class TransferEngine<
    * Run the close method in both source and destination providers
    */
   async close(): Promise<void> {
+    this.#closed = true;
+
     const results = await Promise.allSettled([
       this.sourceProvider.close?.(),
       this.destinationProvider.close?.(),
@@ -627,6 +731,32 @@ class TransferEngine<
     results.forEach((result) => {
       if (result.status === 'rejected') {
         this.panic(result.reason);
+      }
+    });
+  }
+
+  /**
+   * Close both providers on a failure path, reporting rather than throwing cleanup errors so the
+   * error that caused the failure is the one the caller sees.
+   */
+  async #closeAfterError(): Promise<void> {
+    if (this.#closed) {
+      return;
+    }
+
+    this.#closed = true;
+
+    const providers = [this.sourceProvider, this.destinationProvider];
+    const results = await Promise.allSettled(providers.map((provider) => provider.close?.()));
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        const { message } = result.reason instanceof Error ? result.reason : { message: '' };
+
+        this.reportWarning(
+          `Failed to close the ${providers[index].name} provider${message ? `: ${message}` : ''}`,
+          'transfer(cleanup)'
+        );
       }
     });
   }
@@ -719,6 +849,7 @@ class TransferEngine<
   async transfer(): Promise<ITransferResults<S, D>> {
     // reset data between transfers
     this.progress.data = {};
+    this.#closed = false;
 
     try {
       this.#emitTransferUpdate('init');
@@ -726,6 +857,7 @@ class TransferEngine<
       await this.init();
 
       await this.integrityCheck();
+      await this.validateStages();
 
       this.#emitTransferUpdate('start');
 
@@ -753,9 +885,28 @@ class TransferEngine<
         this.reportError(e, (e as DataTransferError).severity || 'fatal');
       }
 
-      // Rollback the destination provider if an exception is thrown during the transfer
-      // Note: This will be configurable in the future
-      await this.destinationProvider.rollback?.(e as Error);
+      // Rollback the destination provider if an exception is thrown before providers are closed.
+      // Once close has started, a provider's transaction may already have ended and cannot be
+      // rolled back safely. Note: This will be configurable in the future.
+      if (!this.#closed) {
+        try {
+          await this.destinationProvider.rollback?.(e as Error);
+        } catch (rollbackError) {
+          const { message } = rollbackError instanceof Error ? rollbackError : { message: '' };
+
+          this.reportWarning(
+            `Failed to rollback the ${this.destinationProvider.name} provider${
+              message ? `: ${message}` : ''
+            }`,
+            'transfer(rollback)'
+          );
+        }
+      }
+
+      // Providers bootstrapped before the failure may still hold resources: the local providers
+      // disable database lifecycles on bootstrap and only re-enable them on close, so skipping this
+      // would leave a programmatic caller's Strapi instance with lifecycles permanently off.
+      await this.#closeAfterError();
 
       throw e;
     }
@@ -765,6 +916,18 @@ class TransferEngine<
       destination: this.destinationProvider.results,
       engine: this.progress.data,
     };
+  }
+
+  async validateStages(): Promise<void> {
+    if (!this.sourceProvider.validateStage) {
+      return;
+    }
+
+    for (const stage of TRANSFER_STAGES) {
+      if (!this.shouldSkipStage(stage)) {
+        await this.sourceProvider.validateStage(stage);
+      }
+    }
   }
 
   async beforeTransfer(): Promise<void> {
@@ -781,7 +944,9 @@ class TransferEngine<
           this.panic(error);
         } else {
           this.panic(
-            new Error(`Unknwon error when executing "beforeTransfer" on the ${origin} provider`)
+            new Error(
+              `Unknown error when executing "beforeTransfer" on the ${provider.name} provider`
+            )
           );
         }
       }
@@ -901,12 +1066,39 @@ class TransferEngine<
     const destination = await this.destinationProvider.createAssetsWriteStream?.();
 
     const transform = this.#createStageTransformStream(stage);
-    const tracker = this.#progressTracker(stage, {
-      size: (value: IAsset) => value.stats.size,
+    const tracker = this.#progressTrackerChunks(stage, {
       key: (value: IAsset) => extname(value.filename) || 'No extension',
     });
 
+    await this.#mergeSourceStageTotals(stage);
     await this.#transferStage({ stage, source, destination, transform, tracker });
+  }
+
+  /**
+   * Merge optional source-reported totals into progress before the stage starts (CLI ETA / totals).
+   */
+  async #mergeSourceStageTotals(stage: TransferStage) {
+    const getTotals = this.sourceProvider.getStageTotals;
+    if (!getTotals) {
+      return;
+    }
+    const totals = await getTotals.call(this.sourceProvider, stage);
+    if (!totals || (totals.totalBytes == null && totals.totalCount == null)) {
+      return;
+    }
+    if (!this.progress.data[stage]) {
+      this.progress.data[stage] = { count: 0, bytes: 0, startTime: Date.now() };
+    }
+    const stageProgress = this.progress.data[stage];
+    if (!stageProgress) {
+      return;
+    }
+    if (totals.totalBytes != null) {
+      stageProgress.totalBytes = totals.totalBytes;
+    }
+    if (totals.totalCount != null) {
+      stageProgress.totalCount = totals.totalCount;
+    }
   }
 
   async transferConfiguration(): Promise<void> {

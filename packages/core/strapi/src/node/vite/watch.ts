@@ -1,5 +1,4 @@
 import path from 'node:path';
-import http from 'node:http';
 import fs from 'node:fs/promises';
 import type { Core } from '@strapi/types';
 
@@ -11,46 +10,14 @@ interface ViteWatcher {
   close(): Promise<void>;
 }
 
-const HMR_DEFAULT_PORT = 5173;
-
-const createHMRServer = () => {
-  return http.createServer(
-    // http server request handler. keeps the same with
-    // https://github.com/websockets/ws/blob/45e17acea791d865df6b255a55182e9c42e5877a/lib/websocket-server.js#L88-L96
-    (_, res) => {
-      const body = http.STATUS_CODES[426]; // Upgrade Required
-
-      res.writeHead(426, {
-        'Content-Length': body?.length ?? 0,
-        'Content-Type': 'text/plain',
-      });
-
-      res.end(body);
-    }
-  );
-};
-
 const watch = async (ctx: BuildContext): Promise<ViteWatcher> => {
-  const hmrServer = createHMRServer();
-
-  ctx.options.hmrServer = hmrServer;
-  ctx.options.hmrClientPort = HMR_DEFAULT_PORT;
-
-  const config = await resolveDevelopmentConfig(ctx);
-  const finalConfig = await mergeConfigWithUserConfig(config, ctx);
-
-  const hmrConfig = config.server?.hmr;
-
-  // If the server used for Vite hmr is the one we've created (<> no user override)
-  if (typeof hmrConfig === 'object' && hmrConfig.server === hmrServer) {
-    // Only restart the hmr server when Strapi's server is listening
-    strapi.server.httpServer.on('listening', async () => {
-      hmrServer.listen(hmrConfig.clientPort ?? hmrConfig.port ?? HMR_DEFAULT_PORT);
-    });
-  }
+  const finalConfig = await mergeConfigWithUserConfig(await resolveDevelopmentConfig(ctx), ctx);
 
   ctx.logger.debug('Vite config', finalConfig);
 
+  // Imported dynamically so this file's CJS build resolves Vite's ESM Node API instead of
+  // its CJS entry, which emits "The CJS build of Vite's Node API is deprecated".
+  // https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated
   const { createServer } = await import('vite');
 
   const vite = await createServer(finalConfig);
@@ -63,6 +30,12 @@ const watch = async (ctx: BuildContext): Promise<ViteWatcher> => {
       if (!koaCtx.path.startsWith(prefix)) {
         koaCtx.path = `${prefix}${koaCtx.path}`;
       }
+
+      // Set cache-control headers to prevent caching issues during development restarts
+      koaCtx.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      koaCtx.set('Pragma', 'no-cache');
+      koaCtx.set('Expires', '0');
+      koaCtx.set('Surrogate-Control', 'no-store');
 
       vite.middlewares(koaCtx.req, koaCtx.res, (err: unknown) => {
         if (err) {
@@ -91,14 +64,35 @@ const watch = async (ctx: BuildContext): Promise<ViteWatcher> => {
 
     const url = koaCtx.originalUrl;
 
-    let template = await fs.readFile(path.relative(ctx.cwd, '.strapi/client/index.html'), 'utf-8');
-    template = await vite.transformIndexHtml(url, template);
+    try {
+      let template = await fs.readFile(
+        path.relative(ctx.cwd, '.strapi/client/index.html'),
+        'utf-8'
+      );
+      template = await vite.transformIndexHtml(url, template);
 
-    koaCtx.type = 'html';
-    koaCtx.body = template;
+      koaCtx.type = 'html';
+      koaCtx.body = template;
+    } catch (error) {
+      ctx.logger.error('Failed to serve admin panel in development mode:', error);
+      // Don't fallback to other handlers in development mode to prevent MIME type conflicts
+      koaCtx.status = 500;
+      koaCtx.body = 'Admin panel temporarily unavailable during server restart';
+    }
   };
 
   const adminRoute = `${ctx.adminPath}/:path*`;
+
+  // Remove any existing admin routes to prevent conflicts during restart
+  const existingRoutes = ctx.strapi.server.router.stack.filter(
+    (layer) => layer.path === adminRoute
+  );
+  existingRoutes.forEach((route) => {
+    const index = ctx.strapi.server.router.stack.indexOf(route);
+    if (index > -1) {
+      ctx.strapi.server.router.stack.splice(index, 1);
+    }
+  });
 
   ctx.strapi.server.router.get(adminRoute, serveAdmin);
   ctx.strapi.server.router.use(adminRoute, viteMiddlewares);
@@ -106,15 +100,6 @@ const watch = async (ctx: BuildContext): Promise<ViteWatcher> => {
   return {
     async close() {
       await vite.close();
-
-      if (hmrServer.listening) {
-        // Manually close the hmr server
-        // /!\ This operation MUST be done after calling .close() on the vite
-        //      instance to avoid flaky behaviors with attached clients
-        await new Promise<void>((resolve, reject) => {
-          hmrServer.close((err) => (err ? reject(err) : resolve()));
-        });
-      }
     },
   };
 };

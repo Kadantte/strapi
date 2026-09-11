@@ -2,7 +2,6 @@ import { errors } from '@strapi/utils';
 import type { Modules, Struct, UID } from '@strapi/types';
 
 type PaginatedDocuments = Modules.Documents.PaginatedResult<UID.Schema>;
-type PaginationQuery = Modules.Documents.Params.Pagination.PageNotation;
 type SortQuery = Modules.Documents.Params.Sort.StringNotation<UID.Schema> & string;
 
 // Admin document response follows the same format as the document service
@@ -95,7 +94,6 @@ export type ProhibitedCloningField = [fieldNames: string[], 'unique' | 'relation
 export declare namespace AutoClone {
   export interface Request {
     body: {};
-    query: {};
   }
 
   export interface Params {
@@ -374,7 +372,10 @@ export declare namespace CountDraftRelations {
   }
 
   export interface Response {
-    data: number;
+    data: {
+      unpublishedRelations: number;
+      draftM2mLinks: number;
+    };
     error?: errors.ApplicationError;
   }
 }

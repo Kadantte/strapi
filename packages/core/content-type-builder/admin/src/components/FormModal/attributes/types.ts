@@ -8,6 +8,7 @@ import { toRegressedEnumValue } from '../../../utils/toRegressedEnumValue';
 
 import {
   alreadyUsedAttributeNames,
+  createStringShape,
   createTextShape,
   isMinSuperiorThanMax,
   isNameAllowed,
@@ -160,7 +161,12 @@ export const attributeTypes = {
       enum: yup
         .array()
         .of(yup.string())
-        .min(1, errorsTrads.min.id)
+        /**
+         * CTB renders field errors as `formatMessage({ id: error })` with no values, so the
+         * message must not interpolate anything — the generic `errorsTrads.min` id would leak
+         * its `{min}` placeholder. See strapi/strapi#19030.
+         */
+        .min(1, getTrad('error.validation.enum-empty'))
         .test({
           name: 'areEnumValuesUnique',
           message: getTrad('error.validation.enum-duplicate'),
@@ -288,8 +294,9 @@ export const attributeTypes = {
       target: yup.string().required(errorsTrads.required.id),
       relation: yup.string().required(),
       type: yup.string().required(),
+      required: validators.required(),
       targetAttribute: yup.lazy(() => {
-        const relationType = getRelationType(modifiedData.relation, modifiedData.targetAttribute);
+        const relationType = getRelationType(modifiedData.relation!, modifiedData.targetAttribute);
 
         if (relationType === 'oneWay' || relationType === 'manyWay') {
           return yup.string().nullable();
@@ -351,7 +358,7 @@ export const attributeTypes = {
     return yup.object(shape);
   },
   string(usedAttributeNames: Array<string>, reservedNames: Array<string>) {
-    const shape = createTextShape(usedAttributeNames, reservedNames);
+    const shape = createStringShape(usedAttributeNames, reservedNames);
 
     return yup.object(shape);
   },

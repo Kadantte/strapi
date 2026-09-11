@@ -1,6 +1,6 @@
 /* eslint-disable max-classes-per-file */
 
-import yup from 'yup';
+import * as yup from 'yup';
 import { HttpError } from 'http-errors';
 import { formatYupErrors } from './format-yup-error';
 
@@ -17,7 +17,7 @@ class ApplicationError<
   message: TMessage;
 
   constructor(
-    message = 'An application error occured' as TMessage,
+    message = 'An application error occurred' as TMessage,
     details: TDetails = {} as TDetails
   ) {
     super();

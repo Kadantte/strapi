@@ -1,3 +1,4 @@
+import type { Core } from '@strapi/types';
 import register from './register';
 import bootstrap from './bootstrap';
 import destroy from './destroy';
@@ -10,7 +11,7 @@ import auditLogsController from './audit-logs/controllers/audit-logs';
 import { createAuditLogsService } from './audit-logs/services/audit-logs';
 import { createAuditLogsLifecycleService } from './audit-logs/services/lifecycles';
 import { auditLog } from './audit-logs/content-types/audit-log';
-import type { Core } from '@strapi/types';
+import { AUDIT_LOG_EXPORT_EVENT } from '../../../shared/utils/audit-log-export';
 
 const getAdminEE = () => {
   const eeAdmin = {
@@ -27,40 +28,48 @@ const getAdminEE = () => {
     routes,
   };
 
-  // Only add the other audit-logs APIs if the feature is enabled by the user and the license
-  if (
+  const isAuditLogsEnabled =
     strapi.config.get('admin.auditLogs.enabled', true) &&
-    strapi.ee.features.isEnabled('audit-logs')
-  ) {
-    return {
-      ...eeAdmin,
-      controllers: {
-        ...eeAdmin.controllers,
-        'audit-logs': auditLogsController,
-      },
-      routes: {
-        ...eeAdmin.routes,
-        'audit-logs': auditLogsRoutes,
-      },
-      async register({ strapi }: { strapi: Core.Strapi }) {
-        // Run the the default registration
-        await eeAdmin.register({ strapi });
+    strapi.ee.features.isEnabled('audit-logs');
+  return {
+    ...eeAdmin,
+    controllers: {
+      ...eeAdmin.controllers,
+      ...(isAuditLogsEnabled ? { 'audit-logs': auditLogsController } : {}),
+    },
+    routes: {
+      ...eeAdmin.routes,
+      ...(isAuditLogsEnabled ? { 'audit-logs': auditLogsRoutes } : {}),
+    },
+    async register({ strapi }: { strapi: Core.Strapi }) {
+      // Run the default registration
+      await eeAdmin.register({ strapi });
+
+      if (isAuditLogsEnabled) {
         // Register an internal audit logs service
         strapi.add('audit-logs', createAuditLogsService(strapi));
         // Register an internal audit logs lifecycle service
         const auditLogsLifecycle = createAuditLogsLifecycleService(strapi);
         strapi.add('audit-logs-lifecycle', auditLogsLifecycle);
 
-        await auditLogsLifecycle.register();
-      },
-      async destroy({ strapi }: { strapi: Core.Strapi }) {
-        strapi.get('audit-logs-lifecycle').destroy();
-        await eeAdmin.destroy({ strapi });
-      },
-    };
-  }
+        auditLogsLifecycle.registerEvent(
+          AUDIT_LOG_EXPORT_EVENT,
+          (event: { filters?: unknown }) => ({
+            resource: { type: 'audit-log' },
+            details: { format: 'csv', filters: event?.filters ?? null },
+          })
+        );
 
-  return eeAdmin;
+        await auditLogsLifecycle.register();
+      }
+    },
+    async destroy({ strapi }: { strapi: Core.Strapi }) {
+      if (isAuditLogsEnabled) {
+        strapi.get('audit-logs-lifecycle').destroy();
+      }
+      await eeAdmin.destroy();
+    },
+  };
 };
 
 export default getAdminEE;

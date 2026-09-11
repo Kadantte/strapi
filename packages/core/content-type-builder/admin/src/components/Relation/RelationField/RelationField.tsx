@@ -5,15 +5,18 @@ import { GenericInput } from '../../GenericInputs';
 
 import { RelationTargetPicker } from './RelationTargetPicker/RelationTargetPicker';
 
+import type { FormChangeHandler } from '../../../types';
+import type { Internal } from '@strapi/types';
+
 interface RelationFormBoxProps {
   disabled?: boolean;
-  error?: Record<string, any>;
+  error?: string | null;
   header?: string;
   isMain?: boolean;
   name: string;
-  onChange: (value: any) => void;
+  onChange: FormChangeHandler;
   oneThatIsCreatingARelationWithAnother?: string;
-  target?: string;
+  target?: Internal.UID.ContentType;
   value?: string;
 }
 
@@ -25,7 +28,7 @@ export const RelationFormBox = ({
   name,
   onChange,
   oneThatIsCreatingARelationWithAnother = '',
-  target = '',
+  target,
   value = '',
 }: RelationFormBoxProps) => {
   return (
@@ -37,7 +40,7 @@ export const RelationFormBox = ({
           </Typography>
         ) : (
           <RelationTargetPicker
-            target={target}
+            target={target!}
             oneThatIsCreatingARelationWithAnother={oneThatIsCreatingARelationWithAnother}
           />
         )}
@@ -46,7 +49,7 @@ export const RelationFormBox = ({
       <Box padding={4}>
         <GenericInput
           disabled={disabled}
-          error={error?.id || null}
+          error={error ?? undefined}
           intlLabel={{
             id: getTrad('form.attribute.item.defineRelation.fieldName'),
             defaultMessage: 'Field name',

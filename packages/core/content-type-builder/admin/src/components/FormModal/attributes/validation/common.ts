@@ -27,11 +27,11 @@ const alreadyUsedAttributeNames = (
 };
 
 const getUsedContentTypeAttributeNames = (
-  ctShema: any,
+  ctShema: { attributes?: Record<string, unknown> },
   isEdition: boolean,
   attributeNameToEdit: string
 ) => {
-  const attributes = ctShema?.schema?.attributes ?? {};
+  const attributes = ctShema?.attributes ?? {};
 
   return Object.keys(attributes).filter((attr) => {
     if (isEdition) {
@@ -77,6 +77,13 @@ const validators = {
       })
       .nullable(),
   maxLength: () => yup.number().integer().positive(getTrad('error.validation.positive')).nullable(),
+  maxLengthString: () =>
+    yup
+      .number()
+      .integer()
+      .positive(getTrad('error.validation.positive'))
+      .max(255, 'Maximum length for short text fields is 255 characters')
+      .nullable(),
   minLength: () =>
     yup
       .number()
@@ -119,8 +126,38 @@ const createTextShape = (usedAttributeNames: Array<string>, reservedNames: Array
         message: getTrad('error.validation.regex'),
         test(value) {
           try {
-            return new RegExp(value || '') !== null;
-          } catch (e) {
+            new RegExp(value || '');
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      })
+      .nullable(),
+  };
+
+  return shape;
+};
+
+const createStringShape = (usedAttributeNames: Array<string>, reservedNames: Array<string>) => {
+  const shape = {
+    name: validators.name(usedAttributeNames, reservedNames),
+    type: validators.type(),
+    default: validators.default(),
+    unique: validators.unique(),
+    required: validators.required(),
+    maxLength: validators.maxLengthString(),
+    minLength: validators.minLength(),
+    regex: yup
+      .string()
+      .test({
+        name: 'isValidRegExpPattern',
+        message: getTrad('error.validation.regex'),
+        test(value) {
+          try {
+            new RegExp(value || '');
+            return true;
+          } catch {
             return false;
           }
         },
@@ -146,7 +183,7 @@ const isMinSuperiorThanMax = <
       return true;
     }
 
-    const { max } = (this as any).parent;
+    const { max } = this.parent as { max?: T };
 
     if (!max) {
       return true;
@@ -162,6 +199,7 @@ const isMinSuperiorThanMax = <
 
 export {
   alreadyUsedAttributeNames,
+  createStringShape,
   createTextShape,
   getUsedContentTypeAttributeNames,
   isMinSuperiorThanMax,

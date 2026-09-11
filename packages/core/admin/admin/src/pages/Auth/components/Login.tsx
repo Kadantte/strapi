@@ -16,6 +16,7 @@ import {
   LayoutContent,
 } from '../../../layouts/UnauthenticatedLayout';
 import { translatedErrors } from '../../../utils/translatedErrors';
+import { getRedirectTo } from '../utils';
 
 import type { Login } from '../../../../../shared/contracts/authentication';
 
@@ -40,7 +41,6 @@ const Login = ({ children }: LoginProps) => {
   const [apiError, setApiError] = React.useState<string>();
   const { formatMessage } = useIntl();
   const { search: searchString } = useLocation();
-  const query = React.useMemo(() => new URLSearchParams(searchString), [searchString]);
   const navigate = useNavigate();
 
   const { login } = useAuth('Login', (auth) => auth);
@@ -60,10 +60,7 @@ const Login = ({ children }: LoginProps) => {
 
       setApiError(message);
     } else {
-      const redirectTo = query.get('redirectTo');
-      const redirectUrl = redirectTo ? decodeURIComponent(redirectTo) : '/';
-
-      navigate(redirectUrl);
+      navigate(getRedirectTo(searchString));
     }
   };
 
@@ -74,7 +71,7 @@ const Login = ({ children }: LoginProps) => {
           <Column>
             <Logo />
             <Box paddingTop={6} paddingBottom={1}>
-              <Typography variant="alpha" tag="h1">
+              <Typography variant="alpha" tag="h1" textAlign="center">
                 {formatMessage({
                   id: 'Auth.form.welcome.title',
                   defaultMessage: 'Welcome!',
@@ -82,7 +79,12 @@ const Login = ({ children }: LoginProps) => {
               </Typography>
             </Box>
             <Box paddingBottom={7}>
-              <Typography variant="epsilon" textColor="neutral600">
+              <Typography
+                variant="epsilon"
+                textColor="neutral600"
+                textAlign="center"
+                display="block"
+              >
                 {formatMessage({
                   id: 'Auth.form.welcome.subtitle',
                   defaultMessage: 'Log in to your Strapi account',
@@ -117,7 +119,7 @@ const Login = ({ children }: LoginProps) => {
                     defaultMessage: 'kai@doe.com',
                   }),
                   required: true,
-                  type: 'string' as const,
+                  type: 'email' as const,
                 },
                 {
                   label: formatMessage({

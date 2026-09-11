@@ -11,8 +11,8 @@ import {
   isValidDefaultJSON,
   isValidName,
   isValidEnum,
-  isValidUID,
   isValidRegExpPattern,
+  UID_REGEX,
 } from './common';
 
 export type GetTypeValidatorOptions = {
@@ -79,12 +79,24 @@ const getTypeShape = (attribute: Schema.Attribute.AnyAttribute, { attributes }: 
           .test(
             'isValidDefaultUID',
             'cannot define a default UID if the targetField is set',
-            function (value) {
+            function isValidDefaultUID(value) {
               const { targetField } = this.parent;
               return !!(_.isNil(targetField) || _.isNil(value));
             }
           )
-          .test(isValidUID),
+          .test(
+            'isValidDefaultRegexUID',
+            `\${path} must match the custom regex or the default one "${UID_REGEX}"`,
+            function isValidDefaultRegexUID(value) {
+              const { regex } = this.parent;
+
+              if (regex) {
+                return !_.isNil(value) && (value === '' || new RegExp(regex).test(value));
+              }
+
+              return value === '' || UID_REGEX.test(value as string);
+            }
+          ),
         minLength: validators.minLength,
         maxLength: validators.maxLength.max(256).test(maxLengthIsGreaterThanOrEqualToMinLength),
         options: yup.object().shape({
@@ -94,13 +106,23 @@ const getTypeShape = (attribute: Schema.Attribute.AnyAttribute, { attributes }: 
           customReplacements: yup.array().of(yup.array().of(yup.string()).min(2).max(2)),
           preserveLeadingUnderscore: yup.boolean(),
         }),
+        regex: yup.string().test(isValidRegExpPattern),
       };
     }
 
     /**
      * scalar types
      */
-    case 'string':
+    case 'string': {
+      return {
+        default: yup.string(),
+        required: validators.required,
+        unique: validators.unique,
+        minLength: validators.minLength,
+        maxLength: validators.maxLength.max(255).test(maxLengthIsGreaterThanOrEqualToMinLength),
+        regex: yup.string().test(isValidRegExpPattern),
+      };
+    }
     case 'text': {
       return {
         default: yup.string(),
@@ -206,7 +228,7 @@ const getTypeShape = (attribute: Schema.Attribute.AnyAttribute, { attributes }: 
     }
     case 'boolean': {
       return {
-        default: yup.boolean(),
+        default: yup.boolean().nullable(),
         required: validators.required,
       };
     }
@@ -228,7 +250,12 @@ const getTypeShape = (attribute: Schema.Attribute.AnyAttribute, { attributes }: 
         components: yup
           .array()
           .of(yup.string().required())
-          .test('isArray', '${path} must be an array', (value) => Array.isArray(value))
+          .test(
+            'isArray',
+            // eslint-disable-next-line no-template-curly-in-string -- Yup interpolation placeholder
+            '${path} must be an array',
+            (value) => Array.isArray(value)
+          )
           .min(1),
         min: yup.number(),
         max: yup.number(),

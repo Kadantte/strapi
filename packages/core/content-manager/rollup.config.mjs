@@ -1,75 +1,48 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { defineConfig } from 'rollup';
-import path from 'path';
-import { basePlugins } from '../../../rollup.utils.mjs';
+import { baseConfig } from '../../../rollup.utils.mjs';
+
+/**
+ * The preview script (server/src/preview/controllers/previewScript.js) is a standalone
+ * artifact injected into the user's site inside the preview iframe.
+ *
+ * It must NOT be bundled to avoid any wrapper code or hoisting. That's why we simply
+ * copy it verbatim into the dist folder, and let a controller serve it as-is.
+ */
+const copyPreviewScript = () => ({
+  name: 'copy-preview-script',
+  writeBundle() {
+    const src = path.resolve('server/src/preview/controllers/previewScript.js');
+    const dest = path.resolve('dist/server/preview/controllers/previewScript.js');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+  },
+});
+
+const serverConfig = baseConfig({
+  input: {
+    index: './server/src/index.ts',
+  },
+  rootDir: './server/src',
+  outDir: './dist/server',
+});
+serverConfig.plugins = [...serverConfig.plugins, copyPreviewScript()];
 
 export default defineConfig([
-  {
-    input: path.join(import.meta.dirname, 'server/src/index.ts'),
-    external: (id) => !path.isAbsolute(id) && !id.startsWith('.'),
-    output: [
-      {
-        dir: path.join(import.meta.dirname, 'dist/server'),
-        entryFileNames: '[name].js',
-        chunkFileNames: 'chunks/[name]-[hash].js',
-        exports: 'auto',
-        format: 'cjs',
-        sourcemap: true,
-      },
-      {
-        dir: path.join(import.meta.dirname, 'dist/server'),
-        entryFileNames: '[name].mjs',
-        chunkFileNames: 'chunks/[name]-[hash].mjs',
-        exports: 'auto',
-        format: 'esm',
-        sourcemap: true,
-      },
-    ],
-    plugins: [...basePlugins(import.meta.dirname)],
-  },
-  {
-    input: path.join(import.meta.dirname, 'admin/src/index.ts'),
-    external: (id) => !path.isAbsolute(id) && !id.startsWith('.'),
-    output: [
-      {
-        dir: path.join(import.meta.dirname, 'dist/admin'),
-        entryFileNames: '[name].js',
-        chunkFileNames: 'chunks/[name]-[hash].js',
-        exports: 'named',
-        format: 'cjs',
-        sourcemap: true,
-      },
-      {
-        dir: path.join(import.meta.dirname, 'dist/admin'),
-        entryFileNames: '[name].mjs',
-        chunkFileNames: 'chunks/[name]-[hash].mjs',
-        exports: 'named',
-        format: 'esm',
-        sourcemap: true,
-      },
-    ],
-    plugins: [...basePlugins(import.meta.dirname)],
-  },
-  {
-    input: path.join(import.meta.dirname, 'shared/index.ts'),
-    external: (id) => !path.isAbsolute(id) && !id.startsWith('.'),
-    output: [
-      {
-        dir: path.join(import.meta.dirname, 'dist/shared'),
-        entryFileNames: '[name].js',
-        chunkFileNames: 'chunks/[name]-[hash].js',
-        exports: 'auto',
-        format: 'cjs',
-        sourcemap: true,
-      },
-      {
-        dir: path.join(import.meta.dirname, 'dist/shared'),
-        entryFileNames: '[name].mjs',
-        chunkFileNames: 'chunks/[name]-[hash].mjs',
-        exports: 'auto',
-        format: 'esm',
-        sourcemap: true,
-      },
-    ],
-    plugins: [...basePlugins(import.meta.dirname)],
-  },
+  serverConfig,
+  baseConfig({
+    input: {
+      index: './admin/src/index.ts',
+    },
+    rootDir: './admin/src',
+    outDir: './dist/admin',
+  }),
+  baseConfig({
+    input: {
+      index: './shared/index.ts',
+    },
+    outDir: './dist/shared',
+  }),
 ]);

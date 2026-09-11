@@ -12,8 +12,18 @@ export interface Settings {
     responsiveDimensions?: boolean;
     autoOrientation?: boolean;
     videoPreview?: boolean;
+    aiMetadata?: boolean;
+    /**
+     * Read-only echo of the `plugin::upload.concurrentUploadRequests` app
+     * config — how many upload requests the admin may fire in parallel. Not
+     * part of the stored settings; the server appends it to GET responses and
+     * ignores it on updates.
+     */
+    concurrentUploadRequests?: number;
   };
 }
+
+export type SettingsData = Settings['data'];
 
 /**
  * GET /upload/settings

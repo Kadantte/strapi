@@ -10,6 +10,7 @@ import bodyParser from 'koa-bodyparser';
 import cors from '@koa/cors';
 
 import type { Core } from '@strapi/types';
+import type { Options } from '@koa/cors';
 import type { BaseContext, DefaultContextExtends, DefaultStateExtends } from 'koa';
 
 import { formatGraphqlError } from './format-graphql-error';
@@ -20,7 +21,43 @@ const merge = mergeWith((a, b) => {
   }
 });
 
-export const determineLandingPage = (strapi: Core.Strapi) => {
+type StrapiGraphQLContext = BaseContext & {
+  rootQueryArgsByPath?: Map<string | number, Record<string, unknown>>;
+};
+
+type OperationLimitConfig = {
+  depthLimit?: unknown;
+  maxLimit?: unknown;
+};
+
+export const getOperationLimitsWarning = ({
+  depthLimit: configuredDepthLimit,
+  maxLimit,
+}: OperationLimitConfig): string | undefined => {
+  const unboundedOrInvalidKeys: string[] = [];
+
+  if (
+    typeof configuredDepthLimit !== 'number' ||
+    !Number.isFinite(configuredDepthLimit) ||
+    configuredDepthLimit <= 0
+  ) {
+    unboundedOrInvalidKeys.push('depthLimit');
+  }
+
+  if (typeof maxLimit !== 'number' || !Number.isFinite(maxLimit) || maxLimit <= 0) {
+    unboundedOrInvalidKeys.push('maxLimit');
+  }
+
+  if (unboundedOrInvalidKeys.length === 0) {
+    return undefined;
+  }
+
+  return `Built-in GraphQL operation limits are unbounded or invalid for: ${unboundedOrInvalidKeys.join(', ')}. Configure these limits (for example: defaultLimit: 25, maxLimit: 100, depthLimit: 10). Custom Apollo validation rules may independently enforce limits. See https://docs.strapi.io/cms/configurations/plugins.`;
+};
+
+export const determineLandingPage = (
+  strapi: Core.Strapi
+): ApolloServerPlugin<StrapiGraphQLContext> => {
   const { config } = strapi.plugin('graphql');
   const utils = strapi.plugin('graphql').service('utils');
 
@@ -113,32 +150,75 @@ export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
   const { config } = strapi.plugin('graphql');
 
   const path: string = config('endpoint');
+  const configuredDepthLimit = config('depthLimit');
+  const maxLimit = config('maxLimit');
+  const operationLimitsWarning = getOperationLimitsWarning({
+    depthLimit: configuredDepthLimit,
+    maxLimit,
+  });
+
+  if (operationLimitsWarning) {
+    strapi.log.warn(operationLimitsWarning);
+  }
 
   const landingPage = determineLandingPage(strapi);
+  /**
+   * We need the arguments passed to the root query to be available in the association resolver
+   * so we can forward those arguments along to any relations.
+   *
+   * In order to do that we are currently storing the arguments in context.
+   * There is likely a better solution, but for now this is the simplest fix we could find.
+   *
+   * @see https://github.com/strapi/strapi/issues/23524
+   */
+  const pluginAddRootQueryArgs: ApolloServerPlugin<StrapiGraphQLContext> = {
+    async requestDidStart() {
+      return {
+        async executionDidStart() {
+          return {
+            willResolveField({ source, args, contextValue, info }) {
+              if (!source && info.operation.operation === 'query') {
+                // Key args per root field (alias)
+                if (!contextValue.rootQueryArgsByPath) {
+                  contextValue.rootQueryArgsByPath = new Map();
+                }
+                contextValue.rootQueryArgsByPath.set(info.path.key, {
+                  ...args,
+                  _originField: info.fieldName,
+                });
+              }
+            },
+          };
+        },
+      };
+    },
+  };
 
   type CustomOptions = {
-    cors: boolean;
+    cors?: boolean | Options;
     uploads: boolean;
     bodyParserConfig: boolean;
   };
 
-  const defaultServerConfig: ApolloServerOptions<BaseContext> & CustomOptions = {
+  const defaultServerConfig: ApolloServerOptions<StrapiGraphQLContext> & CustomOptions = {
     // Schema
     schema,
 
     // Validation
-    validationRules: [depthLimit(config('depthLimit') as number) as any],
+    // Keep v5 compatibility: depthLimit is passed through unchanged, so an unset or invalid value
+    // does not become an enforced finite limit during an upgrade.
+    validationRules: [depthLimit(configuredDepthLimit as number) as any],
 
     // Errors
     formatError: formatGraphqlError,
 
     // Misc
-    cors: false,
+    cors: undefined,
     uploads: false,
     bodyParserConfig: true,
     // send 400 http status instead of 200 for input validation errors
     status400ForVariableCoercionErrors: true,
-    plugins: [landingPage],
+    plugins: [landingPage, pluginAddRootQueryArgs],
 
     cache: 'bounded' as const,
   };
@@ -146,7 +226,7 @@ export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
   const serverConfig = merge(
     defaultServerConfig,
     config('apolloServer')
-  ) as ApolloServerOptions<BaseContext> & CustomOptions;
+  ) as ApolloServerOptions<StrapiGraphQLContext> & CustomOptions;
 
   // Create a new Apollo server
   const server = new ApolloServer(serverConfig);
@@ -166,8 +246,14 @@ export async function bootstrap({ strapi }: { strapi: Core.Strapi }) {
   const handler: Core.MiddlewareHandler[] = [];
 
   // add cors middleware
-  if (cors) {
+  if (serverConfig.cors === false) {
+    // Explicitly disabled - don't add middleware
+  } else if (serverConfig.cors === undefined || serverConfig.cors === true) {
+    // enable with defaults (backwards compatible)
     handler.push(cors());
+  } else {
+    // Custom options object
+    handler.push(cors(serverConfig.cors));
   }
 
   // add koa bodyparser middleware

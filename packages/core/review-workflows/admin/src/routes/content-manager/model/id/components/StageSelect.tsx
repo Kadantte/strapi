@@ -5,16 +5,20 @@ import { useLicenseLimits } from '@strapi/admin/strapi-admin/ee';
 import { unstable_useDocument } from '@strapi/content-manager/strapi-admin';
 import {
   SingleSelect,
+  type SingleSelectProps,
   SingleSelectOption,
   Field,
   Flex,
   Loader,
   Typography,
+  VisuallyHidden,
+  Tooltip,
 } from '@strapi/design-system';
 import { useIntl } from 'react-intl';
 import { useParams } from 'react-router-dom';
 
-import { LimitsModal } from '../../../../../components/LimitsModal';
+import { Stage } from '../../../../../../../shared/contracts/review-workflows';
+import { LimitsModal, LimitsModalProps } from '../../../../../components/LimitsModal';
 import {
   CHARGEBEE_STAGES_PER_WORKFLOW_ENTITLEMENT_NAME,
   CHARGEBEE_WORKFLOW_ENTITLEMENT_NAME,
@@ -27,7 +31,129 @@ import { STAGE_ATTRIBUTE_NAME } from './constants';
 
 import type { Data } from '@strapi/types';
 
-export const StageSelect = () => {
+/* -------------------------------------------------------------------------------------------------
+ * LimitModals
+ * -----------------------------------------------------------------------------------------------*/
+
+const WorkflowLimitModal = ({ open, onOpenChange }: LimitsModalProps) => {
+  const { formatMessage } = useIntl();
+
+  return (
+    <LimitsModal.Root open={open} onOpenChange={onOpenChange}>
+      <LimitsModal.Title>
+        {formatMessage({
+          id: 'review-workflows.workflows.limit.title',
+          defaultMessage: 'You’ve reached the limit of workflows in your plan',
+        })}
+      </LimitsModal.Title>
+
+      <LimitsModal.Body>
+        {formatMessage({
+          id: 'review-workflows.workflows.limit.body',
+          defaultMessage: 'Delete a workflow or contact Sales to enable more workflows.',
+        })}
+      </LimitsModal.Body>
+    </LimitsModal.Root>
+  );
+};
+
+const StageLimitModal = ({ open, onOpenChange }: LimitsModalProps) => {
+  const { formatMessage } = useIntl();
+
+  return (
+    <LimitsModal.Root open={open} onOpenChange={onOpenChange}>
+      <LimitsModal.Title>
+        {formatMessage({
+          id: 'review-workflows.stages.limit.title',
+          defaultMessage: 'You have reached the limit of stages for this workflow in your plan',
+        })}
+      </LimitsModal.Title>
+
+      <LimitsModal.Body>
+        {formatMessage({
+          id: 'review-workflows.stages.limit.body',
+          defaultMessage: 'Try deleting some stages or contact Sales to enable more stages.',
+        })}
+      </LimitsModal.Body>
+    </LimitsModal.Root>
+  );
+};
+
+/* -------------------------------------------------------------------------------------------------
+ * StageSelect
+ * -----------------------------------------------------------------------------------------------*/
+
+const Select = ({
+  stages,
+  activeWorkflowStage,
+  isLoading,
+  ...props
+}: SingleSelectProps & { stages: Stage[]; activeWorkflowStage: Stage; isLoading: boolean }) => {
+  const { formatMessage } = useIntl();
+  const { themeColorName } = getStageColorByHex(activeWorkflowStage?.color) ?? {};
+
+  return (
+    <SingleSelect
+      disabled={stages.length === 0}
+      placeholder={formatMessage({
+        id: 'review-workflows.assignee.placeholder',
+        defaultMessage: 'Select…',
+      })}
+      startIcon={
+        activeWorkflowStage && (
+          <Flex
+            tag="span"
+            height={2}
+            background={activeWorkflowStage?.color}
+            borderColor={themeColorName === 'neutral0' ? 'neutral150' : undefined}
+            hasRadius
+            shrink={0}
+            width={2}
+            marginRight="-3px"
+          />
+        )
+      }
+      // @ts-expect-error – `customizeContent` is not correctly typed in the DS.
+      customizeContent={() => {
+        return (
+          <Flex tag="span" justifyContent="space-between" alignItems="center" width="100%">
+            <Typography textColor="neutral800" ellipsis lineHeight="inherit">
+              {activeWorkflowStage?.name ?? ''}
+            </Typography>
+            {isLoading ? <Loader small style={{ display: 'flex' }} data-testid="loader" /> : null}
+          </Flex>
+        );
+      }}
+      {...props}
+    >
+      {stages.map(({ id, color, name }) => {
+        const { themeColorName } = getStageColorByHex(color) ?? {};
+
+        return (
+          <SingleSelectOption
+            key={id}
+            startIcon={
+              <Flex
+                height={2}
+                background={color}
+                borderColor={themeColorName === 'neutral0' ? 'neutral150' : undefined}
+                hasRadius
+                shrink={0}
+                width={2}
+              />
+            }
+            value={id}
+            textValue={name}
+          >
+            {name}
+          </SingleSelectOption>
+        );
+      })}
+    </SingleSelect>
+  );
+};
+
+export const StageSelect = ({ isCompact }: { isCompact?: boolean }) => {
   const {
     collectionType = '',
     slug: model = '',
@@ -47,22 +173,27 @@ export const StageSelect = () => {
       collectionType,
       model,
       documentId: id,
+      params,
     },
     {
       skip: !id && collectionType !== 'single-types',
     }
   );
 
+  // Fall back to the URL `id` so the stages endpoint is still queried when the
+  // selected locale has no entry yet. The backend returns workflow metadata
+  // even when the entity for `documentId + locale` does not exist.
+  const stagesDocumentId = document?.documentId ?? id;
+
   const { data, isLoading: isLoadingStages } = useGetStagesQuery(
     {
       slug: collectionType,
       model: model,
-      // @ts-expect-error – `id` is not correctly typed in the DS.
-      id: document?.documentId,
+      id: stagesDocumentId,
       params,
     },
     {
-      skip: !document?.documentId,
+      skip: !stagesDocumentId || stagesDocumentId === 'create',
     }
   );
 
@@ -123,150 +254,139 @@ export const StageSelect = () => {
             toggleNotification({
               type: 'success',
               message: formatMessage({
-                id: 'content-manager.reviewWorkflows.stage.notification.saved',
+                id: 'review-workflows.stage.notification.saved',
                 defaultMessage: 'Review stage updated',
               }),
             });
           }
+
+          if (isCompact && 'error' in res) {
+            toggleNotification({
+              type: 'danger',
+              message: formatAPIError(res.error),
+            });
+          }
         }
       }
-    } catch (error) {
+    } catch {
       toggleNotification({
         type: 'danger',
         message: formatMessage({
-          id: 'content-manager.reviewWorkflows.stage.notification.error',
+          id: 'review-workflows.stage.notification.error',
           defaultMessage: 'An error occurred while updating the review stage',
         }),
       });
     }
   };
 
-  const { themeColorName } = getStageColorByHex(activeWorkflowStage?.color) ?? {};
-
   const isLoading = isLoadingStages || isLoadingDocument;
+
+  const reviewStageLabel = formatMessage({
+    id: 'review-workflows.stage.label',
+    defaultMessage: 'Review stage',
+  });
+
+  // The Edit View renders the Review Workflows panel even when the user
+  // switches to a locale that has not been saved yet. In that case the
+  // document for the selected locale does not exist and we cannot transition
+  // any stage until the entry is first saved, so surface a dedicated hint
+  // rather than the misleading "no permission" message.
+  const hasDocumentForLocale = Boolean(document?.documentId);
+  const totalWorkflowStages = meta?.stageCount ?? 0;
+  const canTransition = meta?.canTransition ?? true;
+
+  let reviewStageHint: string | undefined;
+  if (!isLoading) {
+    if (!hasDocumentForLocale) {
+      reviewStageHint = formatMessage({
+        id: 'review-workflows.stages.save-first',
+        defaultMessage: 'Save this entry to assign a workflow stage.',
+      });
+    } else if (stages.length === 0) {
+      if (canTransition && totalWorkflowStages === 1) {
+        reviewStageHint = formatMessage({
+          id: 'review-workflows.stages.single-stage',
+          defaultMessage:
+            'This workflow only has one stage. Add more stages to be able to update it here.',
+        });
+      } else {
+        reviewStageHint = formatMessage({
+          id: 'review-workflows.stages.no-transition',
+          defaultMessage: 'You don’t have the permission to update this stage.',
+        });
+      }
+    }
+  }
+
+  if (isCompact) {
+    return (
+      <>
+        <Tooltip label={reviewStageHint}>
+          <Field.Root name={STAGE_ATTRIBUTE_NAME} id={STAGE_ATTRIBUTE_NAME}>
+            <>
+              <VisuallyHidden>
+                <Field.Label>{reviewStageLabel}</Field.Label>
+              </VisuallyHidden>
+              <Select
+                stages={stages}
+                activeWorkflowStage={activeWorkflowStage}
+                isLoading={isLoading}
+                size="S"
+                disabled={stages.length === 0}
+                value={activeWorkflowStage?.id}
+                onChange={handleChange}
+                placeholder={formatMessage({
+                  id: 'review-workflows.assignee.placeholder',
+                  defaultMessage: 'Select…',
+                })}
+              />
+            </>
+          </Field.Root>
+        </Tooltip>
+        <WorkflowLimitModal
+          open={showLimitModal === 'workflow'}
+          onOpenChange={() => setShowLimitModal(null)}
+        />
+        <StageLimitModal
+          open={showLimitModal === 'stage'}
+          onOpenChange={() => setShowLimitModal(null)}
+        />
+      </>
+    );
+  }
 
   return (
     <>
       <Field.Root
-        hint={
-          !isLoading &&
-          stages.length === 0 &&
-          formatMessage({
-            id: 'content-manager.reviewWorkflows.stages.no-transition',
-            defaultMessage: 'You don’t have the permission to update this stage.',
-          })
-        }
+        hint={reviewStageHint}
         error={(error && formatAPIError(error)) || undefined}
         name={STAGE_ATTRIBUTE_NAME}
         id={STAGE_ATTRIBUTE_NAME}
       >
-        <Field.Label>
-          {formatMessage({
-            id: 'content-manager.reviewWorkflows.stage.label',
-            defaultMessage: 'Review stage',
-          })}
-        </Field.Label>
-        <SingleSelect
+        <Field.Label>{reviewStageLabel}</Field.Label>
+        <Select
+          stages={stages}
+          activeWorkflowStage={activeWorkflowStage}
+          isLoading={isLoading}
           disabled={stages.length === 0}
           value={activeWorkflowStage?.id}
           onChange={handleChange}
           placeholder={formatMessage({
-            id: 'content-manager.reviewWorkflows.assignee.placeholder',
+            id: 'review-workflows.assignee.placeholder',
             defaultMessage: 'Select…',
           })}
-          startIcon={
-            activeWorkflowStage && (
-              <Flex
-                tag="span"
-                height={2}
-                background={activeWorkflowStage?.color}
-                borderColor={themeColorName === 'neutral0' ? 'neutral150' : undefined}
-                hasRadius
-                shrink={0}
-                width={2}
-                marginRight="-3px"
-              />
-            )
-          }
-          // @ts-expect-error – `customizeContent` is not correctly typed in the DS.
-          customizeContent={() => {
-            return (
-              <Flex tag="span" justifyContent="space-between" alignItems="center" width="100%">
-                <Typography textColor="neutral800" ellipsis>
-                  {activeWorkflowStage?.name ?? ''}
-                </Typography>
-                {isLoading ? (
-                  <Loader small style={{ display: 'flex' }} data-testid="loader" />
-                ) : null}
-              </Flex>
-            );
-          }}
-        >
-          {stages.map(({ id, color, name }) => {
-            const { themeColorName } = getStageColorByHex(color) ?? {};
-
-            return (
-              <SingleSelectOption
-                key={id}
-                startIcon={
-                  <Flex
-                    height={2}
-                    background={color}
-                    borderColor={themeColorName === 'neutral0' ? 'neutral150' : undefined}
-                    hasRadius
-                    shrink={0}
-                    width={2}
-                  />
-                }
-                value={id}
-                textValue={name}
-              >
-                {name}
-              </SingleSelectOption>
-            );
-          })}
-        </SingleSelect>
+        />
         <Field.Hint />
         <Field.Error />
       </Field.Root>
-
-      <LimitsModal.Root
+      <WorkflowLimitModal
         open={showLimitModal === 'workflow'}
         onOpenChange={() => setShowLimitModal(null)}
-      >
-        <LimitsModal.Title>
-          {formatMessage({
-            id: 'content-manager.reviewWorkflows.workflows.limit.title',
-            defaultMessage: 'You’ve reached the limit of workflows in your plan',
-          })}
-        </LimitsModal.Title>
-
-        <LimitsModal.Body>
-          {formatMessage({
-            id: 'content-manager.reviewWorkflows.workflows.limit.body',
-            defaultMessage: 'Delete a workflow or contact Sales to enable more workflows.',
-          })}
-        </LimitsModal.Body>
-      </LimitsModal.Root>
-
-      <LimitsModal.Root
+      />
+      <StageLimitModal
         open={showLimitModal === 'stage'}
         onOpenChange={() => setShowLimitModal(null)}
-      >
-        <LimitsModal.Title>
-          {formatMessage({
-            id: 'content-manager.reviewWorkflows.stages.limit.title',
-            defaultMessage: 'You have reached the limit of stages for this workflow in your plan',
-          })}
-        </LimitsModal.Title>
-
-        <LimitsModal.Body>
-          {formatMessage({
-            id: 'content-manager.reviewWorkflows.stages.limit.body',
-            defaultMessage: 'Try deleting some stages or contact Sales to enable more stages.',
-          })}
-        </LimitsModal.Body>
-      </LimitsModal.Root>
+      />
     </>
   );
 };

@@ -1,9 +1,17 @@
 import { Avatar, Box, Flex } from '@strapi/design-system';
-import { Folder } from '@strapi/icons';
+import {
+  File as FileIcon,
+  FileCsv,
+  FilePdf,
+  FileXls,
+  FileZip,
+  Folder,
+  VolumeUp,
+} from '@strapi/icons';
 import { useIntl } from 'react-intl';
 import { styled } from 'styled-components';
 
-import { AssetType } from '../../constants';
+import { ASSET_TYPES } from '../../enums';
 import {
   createAssetUrl,
   getFileExtension,
@@ -58,9 +66,11 @@ export const PreviewCell = ({ type, content }: PreviewCellProps) => {
     );
   }
 
-  const { alternativeText, ext, formats, mime, name, url } = content;
+  const { alternativeText, ext, formats, isLocal, isUrlSigned, mime, name, url } = content;
 
-  if (mime?.includes(AssetType.Image)) {
+  const fileExtension = getFileExtension(ext);
+
+  if (mime?.includes(ASSET_TYPES.Image)) {
     const mediaURL =
       prefixFileUrlWithBackendUrl(formats?.thumbnail?.url) ?? prefixFileUrlWithBackendUrl(url);
 
@@ -68,13 +78,17 @@ export const PreviewCell = ({ type, content }: PreviewCellProps) => {
       <Avatar.Item
         src={mediaURL}
         alt={alternativeText || undefined}
+        // Only signed remote URLs need crossOrigin (cache collision with the
+        // preview). Public/unsigned remote thumbnails must render without a
+        // bucket CORS rule. See #26581.
+        crossOrigin={!isLocal && isUrlSigned ? 'anonymous' : undefined}
         preview
         fallback={alternativeText}
       />
     );
   }
 
-  if (mime?.includes(AssetType.Video)) {
+  if (mime?.includes(ASSET_TYPES.Video)) {
     return (
       <VideoPreviewWrapper>
         <VideoPreview
@@ -86,9 +100,43 @@ export const PreviewCell = ({ type, content }: PreviewCellProps) => {
     );
   }
 
+  if (mime?.includes(ASSET_TYPES.Audio)) {
+    return (
+      <Flex
+        background="neutral100"
+        borderRadius="100%"
+        color="neutral500"
+        width="3.2rem"
+        height="3.2rem"
+        justifyContent="center"
+      >
+        <VolumeUp width={16} height={16} />
+      </Flex>
+    );
+  }
+
+  type IconComponent = typeof FileIcon;
+  const DOC_ICON_MAP: Record<string, IconComponent> = {
+    pdf: FilePdf,
+    csv: FileCsv,
+    xls: FileXls,
+    zip: FileZip,
+  };
+
+  const DocIcon = fileExtension ? DOC_ICON_MAP[fileExtension] || FileIcon : FileIcon;
+  const testId =
+    fileExtension && DOC_ICON_MAP[fileExtension] ? `file-${fileExtension}-icon` : 'file-icon';
+
   return (
-    <Box background="secondary100" color="secondary600" width="3.2rem" height="3.2rem">
-      {getFileExtension(ext)}
-    </Box>
+    <Flex
+      justifyContent="center"
+      borderRadius="100%"
+      background="neutral100"
+      color="neutral500"
+      width="3.2rem"
+      height="3.2rem"
+    >
+      <DocIcon width={16} height={16} data-testid={testId} />
+    </Flex>
   );
 };

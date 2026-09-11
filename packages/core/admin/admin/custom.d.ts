@@ -5,7 +5,6 @@ import { type StrapiTheme } from '@strapi/design-system';
 import type { Modules } from '@strapi/types';
 
 declare module 'styled-components' {
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
   export interface DefaultTheme extends StrapiTheme {}
 }
 
@@ -15,18 +14,30 @@ interface BrowserStrapi {
   future: {
     isEnabled: (name: keyof NonNullable<Modules.Features.FeaturesConfig['future']>) => boolean;
   };
+  /**
+   * Permanent config flags from the project's `features` file. Separate from `features`
+   * below, which carries EE licence feature names rather than configuration.
+   */
+  featureFlags: {
+    isEnabled: (name: keyof Omit<Modules.Features.FeaturesConfig, 'future'>) => boolean;
+  };
   features: {
     SSO: 'sso';
     AUDIT_LOGS: 'audit-logs';
     REVIEW_WORKFLOWS: 'review-workflows';
     isEnabled: (featureName?: string) => boolean;
   };
+  isTrialLicense: boolean;
   flags: {
     promoteEE?: boolean;
     nps?: boolean;
+    docLinks?: boolean;
   };
-  projectType: 'Community' | 'Enterprise';
+  projectType: 'Community' | 'Growth' | 'Enterprise';
   telemetryDisabled: boolean;
+  ai: {
+    enabled: boolean;
+  };
 }
 
 declare global {

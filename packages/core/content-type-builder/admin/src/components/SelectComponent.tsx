@@ -2,29 +2,32 @@ import { SingleSelectOption, SingleSelect, Field } from '@strapi/design-system';
 import { useIntl } from 'react-intl';
 
 import { MAX_COMPONENT_DEPTH } from '../constants';
-import { useDataManager } from '../hooks/useDataManager';
 import { getChildrenMaxDepth, getComponentDepth } from '../utils/getMaxDepth';
 
+import { useDataManager } from './DataManager/useDataManager';
+
+import type { FormChangeHandler, IntlLabel } from '../types';
 import type { Internal } from '@strapi/types';
 interface Option {
-  uid: string;
-  label: string;
-  categoryName: string;
+  uid: Internal.UID.Component;
+  label?: string;
+  categoryName?: string;
 }
 
+type ComponentToCreate = {
+  displayName?: string;
+  category?: string;
+};
+
 interface SelectComponentProps {
-  componentToCreate?: Record<string, any> | null;
+  componentToCreate?: ComponentToCreate | null;
   error?: string | null;
-  intlLabel: {
-    id: string;
-    defaultMessage: string;
-    values?: Record<string, any>;
-  };
+  intlLabel: IntlLabel;
   isAddingAComponentToAnotherComponent: boolean;
   isCreating: boolean;
   isCreatingComponentWhileAddingAField: boolean;
   name: string;
-  onChange: (value: any) => void;
+  onChange: FormChangeHandler<string, 'select-category'>;
   targetUid: Internal.UID.Schema;
   value: string;
   forTarget: string;
@@ -53,7 +56,7 @@ export const SelectComponent = ({
     nestedComponents,
   } = useDataManager();
 
-  const isTargetAComponent = ['component', 'components'].includes(forTarget);
+  const isTargetAComponent = forTarget === 'component';
 
   let options: Option[] = Object.entries(componentsGroupedByCategory).reduce(
     (acc: Option[], current) => {
@@ -61,7 +64,7 @@ export const SelectComponent = ({
       const compos = components.map((component) => {
         return {
           uid: component.uid,
-          label: component.schema.displayName,
+          label: component.info.displayName,
           categoryName,
         };
       });
@@ -72,7 +75,7 @@ export const SelectComponent = ({
   );
 
   if (isAddingAComponentToAnotherComponent) {
-    options = options.filter(({ uid }: any) => {
+    options = options.filter(({ uid }) => {
       const maxDepth = getChildrenMaxDepth(uid, componentsThatHaveOtherComponentInTheirAttributes);
       const componentDepth = getComponentDepth(targetUid, nestedComponents);
       const totalDepth = maxDepth + componentDepth;
@@ -89,7 +92,7 @@ export const SelectComponent = ({
   if (isCreatingComponentWhileAddingAField) {
     options = [
       {
-        uid: value,
+        uid: value as Internal.UID.Component,
         label: componentToCreate?.displayName,
         categoryName: componentToCreate?.category,
       },
@@ -101,8 +104,8 @@ export const SelectComponent = ({
       <Field.Label>{label}</Field.Label>
       <SingleSelect
         disabled={isCreatingComponentWhileAddingAField || !isCreating}
-        onChange={(value: any) => {
-          onChange({ target: { name, value, type: 'select-category' } });
+        onChange={(value: string | number) => {
+          onChange({ target: { name, value: value.toString(), type: 'select-category' } });
         }}
         value={value || ''}
       >

@@ -6,11 +6,13 @@ import {
   useTracking,
   type TrackingEvent,
   useAPIErrorHandler,
-  useGuidedTour,
 } from '@strapi/admin/strapi-admin';
+import { useGetAiFeatureConfigQuery, useAIAvailability } from '@strapi/admin/strapi-admin/ee';
 import { useIntl, type MessageDescriptor } from 'react-intl';
 import { useNavigate } from 'react-router-dom';
 
+import { useRelationModal } from '../pages/EditView/components/FormInputs/Relations/RelationModal';
+import { usePreviewContext } from '../preview/pages/Preview';
 import {
   useAutoCloneDocumentMutation,
   useCloneDocumentMutation,
@@ -49,30 +51,37 @@ const DEFAULT_UNEXPECTED_ERROR_MSG = {
   defaultMessage: 'An error occurred, please try again',
 } satisfies MessageDescriptor;
 
-type OperationResponse<TResponse extends { data: any; meta?: any; error?: any }> =
+type OperationResponse<TResponse extends { data: unknown; meta?: unknown; error?: unknown }> =
   | Pick<TResponse, 'data'>
   | Pick<TResponse, 'data' | 'meta'>
   | { error: BaseQueryError | SerializedError };
 
-type BulkOperationResponse<TResponse extends { data: any; error?: any }> =
+type BulkOperationResponse<TResponse extends { data: unknown; error?: unknown }> =
   | Pick<TResponse, 'data'>
   | { error: BaseQueryError | SerializedError };
 
-type UseDocumentActions = () => {
+type QueryParams = Record<string, unknown>;
+
+type UseDocumentActions = (
+  fromPreview?: boolean,
+  fromRelationModal?: boolean
+) => {
   /**
    * @description Attempts to clone a document based on the provided sourceId.
    * This will return a list of the fields as an error if it's unable to clone.
    * You most likely want to use the `clone` action instead.
    */
+  isLoading: boolean;
   autoClone: (args: {
     model: string;
     sourceId: string;
+    locale?: string;
   }) => Promise<OperationResponse<AutoClone.Response>>;
   clone: (
     args: {
       model: string;
       documentId: string;
-      params?: object;
+      params?: QueryParams;
     },
     document: Omit<Document, 'id'>,
     trackerProperty?: Extract<
@@ -83,7 +92,7 @@ type UseDocumentActions = () => {
   create: (
     args: {
       model: string;
-      params?: object;
+      params?: QueryParams;
     },
     document: Omit<Document, 'id'>,
     trackerProperty?: Extract<
@@ -96,7 +105,7 @@ type UseDocumentActions = () => {
       collectionType: string;
       model: string;
       documentId?: string;
-      params?: object;
+      params?: QueryParams;
     },
     trackerProperty?: Extract<
       TrackingEvent,
@@ -106,40 +115,40 @@ type UseDocumentActions = () => {
   deleteMany: (args: {
     model: string;
     documentIds: string[];
-    params?: object;
+    params?: QueryParams;
   }) => Promise<BulkOperationResponse<BulkDelete.Response>>;
   discard: (args: {
     collectionType: string;
     model: string;
     documentId?: string;
-    params?: object;
+    params?: QueryParams;
   }) => Promise<OperationResponse<Discard.Response>>;
   getDocument: (args: {
     collectionType: string;
     model: string;
     documentId?: string;
-    params?: object;
+    params?: QueryParams;
   }) => Promise<FindOne.Response | undefined>;
   publish: (
     args: {
       collectionType: string;
       model: string;
       documentId?: string;
-      params?: object;
+      params?: QueryParams;
     },
     document: Partial<Document>
   ) => Promise<OperationResponse<Publish.Response>>;
   publishMany: (args: {
     model: string;
     documentIds: string[];
-    params?: object;
+    params?: QueryParams;
   }) => Promise<BulkOperationResponse<BulkPublish.Response>>;
   update: (
     args: {
       collectionType: string;
       model: string;
       documentId?: string;
-      params?: object;
+      params?: QueryParams;
     },
     document: Partial<Document>,
     trackerProperty?: Extract<
@@ -152,14 +161,14 @@ type UseDocumentActions = () => {
       collectionType: string;
       model: string;
       documentId?: string;
-      params?: object;
+      params?: QueryParams;
     },
     discardDraft?: boolean
   ) => Promise<OperationResponse<Unpublish.Response>>;
   unpublishMany: (args: {
     model: string;
     documentIds: string[];
-    params?: object;
+    params?: QueryParams;
   }) => Promise<BulkOperationResponse<BulkUnpublish.Response>>;
 };
 
@@ -186,7 +195,6 @@ type IUseDocumentActs = ReturnType<UseDocumentActions>;
  * return <Form method="PUT" onSubmit={handleSubmit} />
  * ```
  *
- * @see {@link https://contributor.strapi.io/docs/core/content-manager/hooks/use-document-operations} for more information
  */
 const useDocumentActions: UseDocumentActions = () => {
   const { toggleNotification } = useNotification();
@@ -194,9 +202,17 @@ const useDocumentActions: UseDocumentActions = () => {
   const { trackUsage } = useTracking();
   const { _unstableFormatAPIError: formatAPIError } = useAPIErrorHandler();
   const navigate = useNavigate();
-  const setCurrentStep = useGuidedTour('useDocumentActions', (state) => state.setCurrentStep);
+  const { data: aiFeatureConfig } = useGetAiFeatureConfigQuery();
+  const isAiAvailable = useAIAvailability();
+  const isAiI18nConfigured = Boolean(aiFeatureConfig?.isAiI18nConfigured);
 
-  const [deleteDocument] = useDeleteDocumentMutation();
+  // Get metadata from context providers for tracking purposes
+  const previewContext = usePreviewContext('useDocumentActions', () => true, false);
+  const relationContext = useRelationModal('useDocumentActions', () => true, false);
+  const fromPreview = previewContext != undefined;
+  const fromRelationModal = relationContext != undefined;
+
+  const [deleteDocument, { isLoading: isDeleting }] = useDeleteDocumentMutation();
   const _delete: IUseDocumentActs['delete'] = React.useCallback(
     async ({ collectionType, model, documentId, params }, trackerProperty) => {
       try {
@@ -243,7 +259,7 @@ const useDocumentActions: UseDocumentActions = () => {
     [trackUsage, deleteDocument, toggleNotification, formatMessage, formatAPIError]
   );
 
-  const [deleteManyDocuments] = useDeleteManyDocumentsMutation();
+  const [deleteManyDocuments, { isLoading: isDeletingMany }] = useDeleteManyDocumentsMutation();
 
   const deleteMany: IUseDocumentActs['deleteMany'] = React.useCallback(
     async ({ model, documentIds, params }) => {
@@ -291,7 +307,7 @@ const useDocumentActions: UseDocumentActions = () => {
     [trackUsage, deleteManyDocuments, toggleNotification, formatMessage, formatAPIError]
   );
 
-  const [discardDocument] = useDiscardDocumentMutation();
+  const [discardDocument, { isLoading: isDiscardingDocument }] = useDiscardDocumentMutation();
   const discard: IUseDocumentActs['discard'] = React.useCallback(
     async ({ collectionType, model, documentId, params }) => {
       try {
@@ -332,11 +348,12 @@ const useDocumentActions: UseDocumentActions = () => {
     [discardDocument, formatAPIError, formatMessage, toggleNotification]
   );
 
-  const [publishDocument] = usePublishDocumentMutation();
+  const [publishDocument, { isLoading: isPublishing }] = usePublishDocumentMutation();
+
   const publish: IUseDocumentActs['publish'] = React.useCallback(
     async ({ collectionType, model, documentId, params }, data) => {
       try {
-        trackUsage('willPublishEntry');
+        trackUsage('willPublishEntry', { documentId });
 
         const res = await publishDocument({
           collectionType,
@@ -351,7 +368,12 @@ const useDocumentActions: UseDocumentActions = () => {
           return { error: res.error };
         }
 
-        trackUsage('didPublishEntry');
+        trackUsage('didPublishEntry', {
+          documentId,
+          fromPreview,
+          fromRelationModal,
+          ...(isAiAvailable ? { isAiI18nConfigured } : {}),
+        });
 
         toggleNotification({
           type: 'success',
@@ -371,10 +393,20 @@ const useDocumentActions: UseDocumentActions = () => {
         throw err;
       }
     },
-    [trackUsage, publishDocument, toggleNotification, formatMessage, formatAPIError]
+    [
+      trackUsage,
+      publishDocument,
+      fromPreview,
+      fromRelationModal,
+      toggleNotification,
+      formatMessage,
+      formatAPIError,
+      isAiAvailable,
+      isAiI18nConfigured,
+    ]
   );
 
-  const [publishManyDocuments] = usePublishManyDocumentsMutation();
+  const [publishManyDocuments, { isLoading: isPublishingMany }] = usePublishManyDocumentsMutation();
   const publishMany: IUseDocumentActs['publishMany'] = React.useCallback(
     async ({ model, documentIds, params }) => {
       try {
@@ -416,7 +448,7 @@ const useDocumentActions: UseDocumentActions = () => {
     ]
   );
 
-  const [updateDocument] = useUpdateDocumentMutation();
+  const [updateDocument, { isLoading: isUpdating }] = useUpdateDocumentMutation();
   const update: IUseDocumentActs['update'] = React.useCallback(
     async ({ collectionType, model, documentId, params }, data, trackerProperty) => {
       try {
@@ -438,7 +470,13 @@ const useDocumentActions: UseDocumentActions = () => {
           return { error: res.error };
         }
 
-        trackUsage('didEditEntry', trackerProperty);
+        trackUsage('didEditEntry', {
+          ...trackerProperty,
+          documentId: res.data.data.documentId,
+          fromPreview,
+          fromRelationModal,
+          ...(isAiAvailable ? { isAiI18nConfigured } : {}),
+        });
         toggleNotification({
           type: 'success',
           message: formatMessage({
@@ -459,7 +497,17 @@ const useDocumentActions: UseDocumentActions = () => {
         throw err;
       }
     },
-    [trackUsage, updateDocument, toggleNotification, formatMessage, formatAPIError]
+    [
+      trackUsage,
+      updateDocument,
+      fromPreview,
+      fromRelationModal,
+      toggleNotification,
+      formatMessage,
+      formatAPIError,
+      isAiAvailable,
+      isAiI18nConfigured,
+    ]
   );
 
   const [unpublishDocument] = useUnpublishDocumentMutation();
@@ -507,7 +555,8 @@ const useDocumentActions: UseDocumentActions = () => {
     [trackUsage, unpublishDocument, toggleNotification, formatMessage, formatAPIError]
   );
 
-  const [unpublishManyDocuments] = useUnpublishManyDocumentsMutation();
+  const [unpublishManyDocuments, { isLoading: isUnpublishingMany }] =
+    useUnpublishManyDocumentsMutation();
   const unpublishMany: IUseDocumentActs['unpublishMany'] = React.useCallback(
     async ({ model, documentIds, params }) => {
       try {
@@ -568,8 +617,13 @@ const useDocumentActions: UseDocumentActions = () => {
 
           return { error: res.error };
         }
-
-        trackUsage('didCreateEntry', trackerProperty);
+        trackUsage('didCreateEntry', {
+          ...trackerProperty,
+          documentId: res.data.data.documentId,
+          fromPreview,
+          fromRelationModal,
+          ...(isAiAvailable ? { isAiI18nConfigured } : {}),
+        });
 
         toggleNotification({
           type: 'success',
@@ -578,8 +632,6 @@ const useDocumentActions: UseDocumentActions = () => {
             defaultMessage: 'Saved document',
           }),
         });
-
-        setCurrentStep('contentManager.success');
 
         return res.data;
       } catch (err) {
@@ -593,16 +645,27 @@ const useDocumentActions: UseDocumentActions = () => {
         throw err;
       }
     },
-    [createDocument, formatAPIError, formatMessage, toggleNotification, trackUsage]
+    [
+      createDocument,
+      formatAPIError,
+      formatMessage,
+      fromPreview,
+      fromRelationModal,
+      toggleNotification,
+      trackUsage,
+      isAiAvailable,
+      isAiI18nConfigured,
+    ]
   );
 
   const [autoCloneDocument] = useAutoCloneDocumentMutation();
   const autoClone: IUseDocumentActs['autoClone'] = React.useCallback(
-    async ({ model, sourceId }) => {
+    async ({ model, sourceId, locale }) => {
       try {
         const res = await autoCloneDocument({
           model,
           sourceId,
+          params: locale ? { locale } : undefined,
         });
 
         if ('error' in res) {
@@ -634,7 +697,8 @@ const useDocumentActions: UseDocumentActions = () => {
   const clone: IUseDocumentActs['clone'] = React.useCallback(
     async ({ model, documentId, params }, body, trackerProperty) => {
       try {
-        const { id: _id, ...restBody } = body;
+        // Omit id and documentId so they are not copied to the clone
+        const { id: _id, documentId: _documentId, ...restBody } = body;
 
         /**
          * If we're cloning we want to post directly to this endpoint
@@ -656,7 +720,10 @@ const useDocumentActions: UseDocumentActions = () => {
           return { error: res.error };
         }
 
-        trackUsage('didCreateEntry', trackerProperty);
+        trackUsage('didCreateEntry', {
+          ...trackerProperty,
+          ...(isAiAvailable ? { isAiI18nConfigured } : {}),
+        });
         toggleNotification({
           type: 'success',
           message: formatMessage({
@@ -680,7 +747,16 @@ const useDocumentActions: UseDocumentActions = () => {
         throw err;
       }
     },
-    [cloneDocument, trackUsage, toggleNotification, formatMessage, formatAPIError, navigate]
+    [
+      cloneDocument,
+      trackUsage,
+      toggleNotification,
+      formatMessage,
+      formatAPIError,
+      navigate,
+      isAiAvailable,
+      isAiI18nConfigured,
+    ]
   );
 
   const [getDoc] = useLazyGetDocumentQuery();
@@ -694,6 +770,14 @@ const useDocumentActions: UseDocumentActions = () => {
   );
 
   return {
+    isLoading:
+      isPublishing ||
+      isUpdating ||
+      isDiscardingDocument ||
+      isDeleting ||
+      isDeletingMany ||
+      isUnpublishingMany ||
+      isPublishingMany,
     autoClone,
     clone,
     create,

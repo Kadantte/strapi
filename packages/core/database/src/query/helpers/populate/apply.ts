@@ -1,4 +1,5 @@
 import _ from 'lodash/fp';
+import { hasSort } from '@strapi/utils';
 
 import { fromRow } from '../transform';
 import type { QueryBuilder } from '../../query-builder';
@@ -10,6 +11,24 @@ import { ID, RelationalAttribute, Relation } from '../../../types';
 // Therefore, we will prefix with something unlikely to conflict with a user attribute
 // TODO: ...and completely restrict the strapi_ prefix for an attribute name in the future
 const joinColPrefix = '__strapi' as const;
+
+/**
+ * Join-table `order` preserves connect order when no explicit populate sort is set.
+ * When `populateValue.orderBy` is present, join-table ordering must not take precedence
+ * over the target attribute sort (see query-builder join vs root orderBy ordering).
+ */
+const getJoinTableOrderBy = (
+  populateValue: Record<string, unknown>,
+  joinTable: { orderBy?: Record<string, 'asc' | 'desc'> }
+) => {
+  const explicitSort = populateValue.orderBy ?? populateValue.sort;
+
+  if (hasSort(explicitSort) || !joinTable.orderBy) {
+    return undefined;
+  }
+
+  return _.mapValues((v) => populateValue.ordering || v, joinTable.orderBy);
+};
 
 type Context = {
   db: Database;
@@ -154,7 +173,7 @@ const XtoOne = async (
         rootColumn: joinTable.inverseJoinColumn.referencedColumn,
         rootTable: qb.alias,
         on: joinTable.on,
-        orderBy: joinTable.orderBy,
+        orderBy: getJoinTableOrderBy(populateValue, joinTable),
       })
       .addSelect(joinColSelect)
       .where({ [joinColAlias]: referencedValues })
@@ -281,7 +300,7 @@ const oneToMany = async (input: InputWithTarget<Relation.OneToMany>, ctx: Contex
         rootColumn: joinTable.inverseJoinColumn.referencedColumn,
         rootTable: qb.alias,
         on: joinTable.on,
-        orderBy: _.mapValues((v) => populateValue.ordering || v, joinTable.orderBy),
+        orderBy: getJoinTableOrderBy(populateValue, joinTable),
       })
       .addSelect(joinColSelect)
       .where({ [joinColAlias]: referencedValues })
@@ -370,7 +389,7 @@ const manyToMany = async (input: InputWithTarget<Relation.ManyToMany>, ctx: Cont
       rootColumn: joinTable.inverseJoinColumn.referencedColumn,
       rootTable: populateQb.alias,
       on: joinTable.on,
-      orderBy: _.mapValues((v) => populateValue.ordering || v, joinTable.orderBy),
+      orderBy: getJoinTableOrderBy(populateValue, joinTable),
     })
     .addSelect(joinColSelect)
     .where({ [joinColAlias]: referencedValues })
@@ -405,7 +424,7 @@ const morphX = async (
 
     if (_.isEmpty(referencedValues)) {
       results.forEach((result) => {
-        result[attributeName] = null;
+        result[attributeName] = attribute.relation === 'morphOne' ? null : [];
       });
 
       return;
@@ -423,8 +442,9 @@ const morphX = async (
     results.forEach((result) => {
       const matchingRows = map[result[idColumn.referencedColumn] as string];
 
+      // Match oneToMany/manyToMany: empty morphMany collections serialize as [], not null.
       const matchingValue =
-        attribute.relation === 'morphOne' ? _.first(matchingRows) : matchingRows;
+        attribute.relation === 'morphOne' ? _.first(matchingRows) : matchingRows || [];
 
       result[attributeName] = fromTargetRow(matchingValue);
     });
@@ -461,10 +481,10 @@ const morphX = async (
         rootColumn: joinColumn.referencedColumn,
         rootTable: qb.alias,
         on: {
-          ...(joinTable.on || {}),
+          ...joinTable.on,
           field: attributeName,
         },
-        orderBy: _.mapValues((v) => populateValue.ordering || v, joinTable.orderBy),
+        orderBy: getJoinTableOrderBy(populateValue, joinTable),
       })
       .addSelect([`${alias}.${idColumn.name}`, `${alias}.${typeColumn.name}`])
       .where({
@@ -478,8 +498,9 @@ const morphX = async (
     results.forEach((result) => {
       const matchingRows = map[result[idColumn.referencedColumn] as string];
 
+      // Match oneToMany/manyToMany: empty morphMany collections serialize as [], not null.
       const matchingValue =
-        attribute.relation === 'morphOne' ? _.first(matchingRows) : matchingRows;
+        attribute.relation === 'morphOne' ? _.first(matchingRows) : matchingRows || [];
 
       result[attributeName] = fromTargetRow(matchingValue);
     });
@@ -487,7 +508,7 @@ const morphX = async (
 };
 
 const morphToMany = async (input: Input<Relation.MorphToMany>, ctx: Context) => {
-  const { attribute, attributeName, results, populateValue } = input;
+  const { attribute, attributeName, results, populateValue, isCount } = input;
   const { db } = ctx;
 
   // find with join table
@@ -504,18 +525,32 @@ const morphToMany = async (input: Input<Relation.MorphToMany>, ctx: Context) => 
 
   const qb = db.entityManager.createQueryBuilder(joinTable.name);
 
-  const joinRows = await qb
+  const joinRowsRaw = await qb
     .where({
       [joinColumn.name]: referencedValues,
-      ...(joinTable.on || {}),
-      // If the populateValue contains an "on" property,
-      // only populate the types defined in it
-      ...('on' in populateValue
-        ? { [morphColumn.typeColumn.name]: Object.keys(populateValue.on ?? {}) }
-        : {}),
+      ...joinTable.on,
     })
     .orderBy([joinColumn.name, 'order'])
     .execute<Row[]>({ mapResults: false });
+
+  const allowedTypes =
+    'on' in populateValue && populateValue.on ? new Set(Object.keys(populateValue.on)) : null;
+
+  const joinRows = allowedTypes
+    ? joinRowsRaw.filter((row) => allowedTypes.has(row[typeColumn.name] as string))
+    : joinRowsRaw;
+
+  if (isCount) {
+    const joinMap = _.groupBy(joinColumn.name, joinRows);
+
+    results.forEach((result) => {
+      result[attributeName] = {
+        count: (joinMap[result[joinColumn.referencedColumn] as string] || []).length,
+      };
+    });
+
+    return;
+  }
 
   const joinMap = _.groupBy(joinColumn.name, joinRows);
 
@@ -539,26 +574,28 @@ const morphToMany = async (input: Input<Relation.MorphToMany>, ctx: Context) => 
   const map: MorphIdMap = {};
   const { on, ...typePopulate } = populateValue;
 
-  for (const type of Object.keys(idsByType)) {
-    const ids = idsByType[type];
+  await Promise.all(
+    Object.keys(idsByType).map(async (type) => {
+      const ids = idsByType[type];
 
-    // type was removed but still in morph relation
-    if (!db.metadata.get(type)) {
-      map[type] = {};
+      // type was removed but still in morph relation
+      if (!db.metadata.get(type)) {
+        map[type] = {};
 
-      continue;
-    }
+        return;
+      }
 
-    const qb = db.entityManager.createQueryBuilder(type);
+      const qb = db.entityManager.createQueryBuilder(type);
 
-    const rows = await qb
-      .init(on?.[type] ?? typePopulate)
-      .addSelect(`${qb.alias}.${idColumn.referencedColumn}`)
-      .where({ [idColumn.referencedColumn]: ids })
-      .execute<Row[]>({ mapResults: false });
+      const rows = await qb
+        .init(on?.[type] ?? typePopulate)
+        .addSelect(`${qb.alias}.${idColumn.referencedColumn}`)
+        .where({ [idColumn.referencedColumn]: ids })
+        .execute<Row[]>({ mapResults: false });
 
-    map[type] = _.groupBy<Row>(idColumn.referencedColumn)(rows);
-  }
+      map[type] = _.groupBy<Row>(idColumn.referencedColumn)(rows);
+    })
+  );
 
   results.forEach((result) => {
     const joinResults = joinMap[result[joinColumn.referencedColumn] as string] || [];
@@ -572,10 +609,8 @@ const morphToMany = async (input: Input<Relation.MorphToMany>, ctx: Context) => 
       const fromTargetRow = (rowOrRows: Row | Row[] | undefined) => fromRow(targetMeta, rowOrRows);
 
       return (map[type][id] || []).map((row) => {
-        return {
-          [typeField]: type,
-          ...fromTargetRow(row),
-        };
+        // Spread target first so a same-named user attribute cannot override the morph type UID
+        return { ...fromTargetRow(row), [typeField]: type };
       });
     });
 
@@ -584,11 +619,11 @@ const morphToMany = async (input: Input<Relation.MorphToMany>, ctx: Context) => 
 };
 
 const morphToOne = async (input: Input<Relation.MorphToOne>, ctx: Context) => {
-  const { attribute, attributeName, results, populateValue } = input;
+  const { attribute, attributeName, results, populateValue, isCount } = input;
   const { db } = ctx;
 
   const { morphColumn } = attribute;
-  const { idColumn, typeColumn } = morphColumn;
+  const { idColumn, typeColumn, typeField = '__type' } = morphColumn;
 
   // make a map for each type what ids to return
   // make a nested map per id
@@ -612,9 +647,30 @@ const morphToOne = async (input: Input<Relation.MorphToOne>, ctx: Context) => {
 
   const map: MorphIdMap = {};
   const { on, ...typePopulate } = populateValue;
+  const typeRestrictedTypes =
+    on && typeof on === 'object'
+      ? Object.keys(idsByType).filter((type) => type in on)
+      : Object.keys(idsByType);
+  const allowedTypes = new Set(typeRestrictedTypes);
+
+  if (isCount) {
+    results.forEach((result) => {
+      const id = result[idColumn.name] as ID;
+      const type = result[typeColumn.name] as string;
+
+      result[attributeName] = { count: id && type && allowedTypes.has(type) ? 1 : 0 };
+    });
+
+    return;
+  }
 
   for (const type of Object.keys(idsByType)) {
     const ids = idsByType[type];
+
+    if (!allowedTypes.has(type)) {
+      map[type] = {};
+      continue;
+    }
 
     // type was removed but still in morph relation
     if (!db.metadata.get(type)) {
@@ -647,7 +703,9 @@ const morphToOne = async (input: Input<Relation.MorphToOne>, ctx: Context) => {
     const fromTargetRow = (rowOrRows: Row | Row[] | undefined) =>
       fromRow(db.metadata.get(type), rowOrRows);
 
-    result[attributeName] = fromTargetRow(_.first(matchingRows));
+    const row = fromTargetRow(_.first(matchingRows));
+    // Spread target first so a same-named user attribute cannot override the morph type UID
+    result[attributeName] = row ? { ...row, [typeField]: type } : row;
   });
 };
 
@@ -671,6 +729,28 @@ const pickPopulateParams = (populate: Record<string, unknown>) => {
   return _.pick(fieldsToPick, populate);
 };
 
+const getPopulateValue = (populate: Record<string, any>, filters: Record<string, any>) => {
+  const populateValue = {
+    filters,
+    ...pickPopulateParams(populate),
+  };
+
+  if ('on' in populateValue) {
+    populateValue.on = _.mapValues(
+      (value) => {
+        if (_.isPlainObject(value)) {
+          value.filters = filters;
+        }
+
+        return value;
+      },
+      populateValue.on as Record<string, any>
+    );
+  }
+
+  return populateValue;
+};
+
 const applyPopulate = async (results: Row[], populate: Record<string, any>, ctx: Context) => {
   const { db, uid, qb } = ctx;
   const meta = db.metadata.get(uid);
@@ -679,17 +759,14 @@ const applyPopulate = async (results: Row[], populate: Record<string, any>, ctx:
     return results;
   }
 
-  for (const attributeName of Object.keys(populate)) {
+  const populateAttribute = async (attributeName: string) => {
     const attribute = meta.attributes[attributeName];
 
     if (attribute.type !== 'relation') {
       throw new Error(`Invalid populate attribute ${attributeName}`);
     }
 
-    const populateValue = {
-      filters: qb.state.filters,
-      ...pickPopulateParams(populate[attributeName]),
-    };
+    const populateValue = getPopulateValue(populate[attributeName], qb.state.filters);
 
     const isCount = 'count' in populateValue && populateValue.count === true;
 
@@ -734,7 +811,9 @@ const applyPopulate = async (results: Row[], populate: Record<string, any>, ctx:
         break;
       }
     }
-  }
+  };
+
+  await Promise.all(Object.keys(populate).map(populateAttribute));
 };
 
 export default applyPopulate;

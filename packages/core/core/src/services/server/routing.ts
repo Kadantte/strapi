@@ -34,6 +34,14 @@ const routeSchema = yup.object({
 
     return yup.mixed().isFunction().required();
   }),
+  request: yup
+    .object({
+      params: yup.object().notRequired(),
+      query: yup.object().notRequired(),
+      body: yup.object().notRequired(),
+    })
+    .notRequired(),
+  response: yup.object().notRequired(),
   config: yup
     .object({
       auth: yup.lazy((value) => {
@@ -84,8 +92,8 @@ const createRouteManager = (strapi: Core.Strapi, opts: { type?: string } = {}) =
     // NOTE: the router type is used to tag controller actions and for authentication / authorization so we need to pass this info down to the route level
     const routeWithInfo = Object.assign(route, {
       info: {
-        ...(route.info ?? {}),
-        type: type || 'api',
+        ...route.info,
+        type: type ?? 'api',
       },
     });
 

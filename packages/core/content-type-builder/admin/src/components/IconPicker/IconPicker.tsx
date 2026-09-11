@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { type ChangeEventHandler, useEffect, useRef, useState } from 'react';
 
 import {
   Box,
@@ -19,7 +19,7 @@ import { getTrad } from '../../utils';
 
 import { COMPONENT_ICONS } from './constants';
 
-import type { IntlLabel } from '../../types';
+import type { FormChangeHandler, IntlLabel } from '../../types';
 
 const IconPickerWrapper = styled(Flex)`
   label {
@@ -34,7 +34,7 @@ type Icons = keyof typeof COMPONENT_ICONS;
 interface IconPickProps {
   iconKey: Icons;
   name: string;
-  onChange: (value: any) => void;
+  onChange: ChangeEventHandler<HTMLInputElement>;
   isSelected: boolean;
   ariaLabel: string;
 }
@@ -55,14 +55,16 @@ const IconPick = ({ iconKey, name, onChange, isSelected, ariaLabel }: IconPickPr
             aria-checked={isSelected}
           />
         </VisuallyHidden>
-        <Flex
-          padding={2}
-          cursor="pointer"
-          hasRadius
-          background={isSelected ? 'primary200' : undefined}
-        >
-          <Icon fill={isSelected ? 'primary600' : 'neutral300'} />
-        </Flex>
+        <Tooltip label={iconKey}>
+          <Flex
+            padding={2}
+            cursor="pointer"
+            hasRadius
+            background={isSelected ? 'primary200' : undefined}
+          >
+            <Icon width={'2rem'} height={'2rem'} fill={isSelected ? 'primary600' : 'neutral300'} />
+          </Flex>
+        </Tooltip>
       </Field.Label>
     </Field.Root>
   );
@@ -71,7 +73,7 @@ const IconPick = ({ iconKey, name, onChange, isSelected, ariaLabel }: IconPickPr
 export interface IconPickerProps {
   intlLabel: IntlLabel;
   name: string;
-  onChange: (value: { target: { name: string; value: string } }) => void;
+  onChange: FormChangeHandler<string>;
   value?: string;
 }
 

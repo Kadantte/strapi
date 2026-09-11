@@ -1,5 +1,5 @@
-import type { ComponentWithChildren } from '../components/DataManagerProvider/utils/retrieveComponentsThatHaveComponents';
-import type { NestedComponent } from '../components/DataManagerProvider/utils/retrieveNestedComponents';
+import type { ComponentWithChildren } from '../components/DataManager/utils/retrieveComponentsThatHaveComponents';
+import type { NestedComponent } from '../components/DataManager/utils/retrieveNestedComponents';
 import type { Internal } from '@strapi/types';
 
 const findComponent = <T extends { component: Internal.UID.Component }>(
@@ -22,7 +22,7 @@ export const getChildrenMaxDepth = (
   componentUid: Internal.UID.Component,
   components: Array<ComponentWithChildren>,
   currentDepth = 0
-) => {
+): number => {
   const component = findComponent(componentUid, components);
 
   // If the component doesn't exist or has no child components, return the current depth.

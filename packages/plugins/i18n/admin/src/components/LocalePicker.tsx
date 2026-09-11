@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { useQueryParams } from '@strapi/admin/strapi-admin';
+import { useQueryParams, withEncodedUserParams } from '@strapi/admin/strapi-admin';
 import { SingleSelect, SingleSelectOption } from '@strapi/design-system';
 import { useIntl } from 'react-intl';
 
@@ -12,6 +12,8 @@ import type { I18nBaseQuery } from '../types';
 
 interface Query extends I18nBaseQuery {
   page?: number;
+  filters?: unknown;
+  _q?: unknown;
 }
 
 const LocalePicker = () => {
@@ -26,15 +28,15 @@ const LocalePicker = () => {
   const handleChange = React.useCallback(
     (code: string, replace = false) => {
       setQuery(
-        {
+        withEncodedUserParams(query, {
           page: 1,
           plugins: { ...query.plugins, i18n: { locale: code } },
-        },
+        }),
         'push',
         replace
       );
     },
-    [query.plugins, setQuery]
+    [query, setQuery]
   );
 
   React.useEffect(() => {
@@ -43,28 +45,43 @@ const LocalePicker = () => {
     }
     /**
      * Handle the case where the current locale query param doesn't exist
-     * in the list of available locales, so we redirect to the default locale.
+     * in the list of available locales, so we redirect to the default locale
+     * when the user can read it, or the first locale they can read: the list
+     * cannot be displayed for the other locales.
      */
     const currentDesiredLocale = query.plugins?.i18n?.locale;
     const doesLocaleExist = locales.find((loc) => loc.code === currentDesiredLocale);
-    const defaultLocale = locales.find((locale) => locale.isDefault);
-    if (!doesLocaleExist && defaultLocale?.code) {
-      handleChange(defaultLocale.code, true);
+    const readableLocales = locales.filter((locale) => canRead.includes(locale.code));
+    const targetLocale = readableLocales.find((locale) => locale.isDefault) ?? readableLocales[0];
+    if (!doesLocaleExist && targetLocale?.code) {
+      handleChange(targetLocale.code, true);
     }
-  }, [hasI18n, handleChange, locales, query.plugins?.i18n?.locale]);
+  }, [hasI18n, handleChange, locales, query.plugins?.i18n?.locale, canRead]);
+
+  const sortedLocaleOptions = React.useMemo(() => {
+    const displayedLocales = Array.isArray(locales)
+      ? locales.filter((locale) => {
+          /**
+           * If you can create or read we allow you to see the locale exists
+           * this is because in the ListView, you may be able to create a new entry
+           * in a locale you can't read.
+           */
+          return canCreate.includes(locale.code) || canRead.includes(locale.code);
+        })
+      : [];
+
+    return displayedLocales
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((locale) => (
+        <SingleSelectOption key={locale.id} value={locale.code}>
+          {locale.name}
+        </SingleSelectOption>
+      ));
+  }, [locales, canCreate, canRead]);
 
   if (!hasI18n || !Array.isArray(locales) || locales.length === 0) {
     return null;
   }
-
-  const displayedLocales = locales.filter((locale) => {
-    /**
-     * If you can create or read we allow you to see the locale exists
-     * this is because in the ListView, you may be able to create a new entry
-     * in a locale you can't read.
-     */
-    return canCreate.includes(locale.code) || canRead.includes(locale.code);
-  });
 
   return (
     <SingleSelect
@@ -77,11 +94,7 @@ const LocalePicker = () => {
       // @ts-expect-error – This can be removed in V2 of the DS.
       onChange={handleChange}
     >
-      {displayedLocales.map((locale) => (
-        <SingleSelectOption key={locale.id} value={locale.code}>
-          {locale.name}
-        </SingleSelectOption>
-      ))}
+      {sortedLocaleOptions}
     </SingleSelect>
   );
 };

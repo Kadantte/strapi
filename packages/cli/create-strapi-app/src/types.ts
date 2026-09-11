@@ -20,6 +20,7 @@ export interface Options {
   install?: boolean;
   example?: boolean;
   gitInit?: boolean;
+  nonInteractive?: boolean;
   templateBranch?: string;
   templatePath?: string;
 }
@@ -56,13 +57,16 @@ export interface Scope {
   runApp?: boolean;
   isQuickstart?: boolean;
   uuid?: string;
-  deviceId?: string;
+  installId?: string;
   database: DatabaseInfo;
   tmpPath?: string;
   packageJsonStrapi?: Record<string, unknown>;
   useTypescript?: boolean;
   useExample?: boolean;
   gitInit?: boolean;
+  shouldCreateGrowthSsoTrial: boolean;
+  /** Resolved at scaffold time when packageManager is pnpm (npm_config_user_agent or pnpm --version). */
+  pnpmVersion?: string | null;
 }
 
 export type ClientName = 'mysql' | 'postgres' | 'sqlite';

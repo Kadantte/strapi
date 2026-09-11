@@ -8,6 +8,7 @@ export const ADMIN_PERMISSIONS_EE = {
       main: [{ action: 'admin::audit-logs.read', subject: null }],
       read: [{ action: 'admin::audit-logs.read', subject: null }],
       update: [{ action: 'admin::audit-logs.update', subject: null }],
+      export: [{ action: 'admin::audit-logs.export', subject: null }],
     },
     'review-workflows': {
       main: [{ action: 'admin::review-workflows.read', subject: null }],
@@ -61,31 +62,31 @@ export const getEERoutes = (): RouteObject[] =>
       ]
     : [];
 
+export const AUDIT_LOGS_DEFAULT_PAGE_SIZE = 50;
+
 // TODO: the constants.js file is imported before the React application is setup and
 // therefore `window.strapi` might not exist at import-time. We should probably define
 // which constant is available at which stage of the application lifecycle.
 export const SETTINGS_LINKS_EE = (): SettingsMenu => ({
-  global: [
-    ...(window.strapi.features.isEnabled(window.strapi.features.SSO)
-      ? [
-          {
-            intlLabel: { id: 'Settings.sso.title', defaultMessage: 'Single Sign-On' },
-            to: '/settings/single-sign-on',
-            id: 'sso',
-          },
-        ]
-      : []),
-  ],
+  global: window.strapi.features.isEnabled(window.strapi.features.SSO)
+    ? [
+        {
+          intlLabel: { id: 'Settings.sso.title', defaultMessage: 'Single Sign-On' },
+          to: '/settings/single-sign-on',
+          id: 'sso',
+          licenseOnly: true,
+        },
+      ]
+    : [],
 
-  admin: [
-    ...(window.strapi.features.isEnabled(window.strapi.features.AUDIT_LOGS)
-      ? [
-          {
-            intlLabel: { id: 'global.auditLogs', defaultMessage: 'Audit Logs' },
-            to: '/settings/audit-logs?pageSize=50&page=1&sort=date:DESC',
-            id: 'auditLogs',
-          },
-        ]
-      : []),
-  ],
+  admin: window.strapi.features.isEnabled(window.strapi.features.AUDIT_LOGS)
+    ? [
+        {
+          intlLabel: { id: 'global.auditLogs', defaultMessage: 'Audit Logs' },
+          to: `/settings/audit-logs?pageSize=${AUDIT_LOGS_DEFAULT_PAGE_SIZE}&page=1&sort=date:DESC`,
+          id: 'auditLogs',
+          licenseOnly: true,
+        },
+      ]
+    : [],
 });
